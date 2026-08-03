@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>本地文档管理系统</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- 侧栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">文</div>
+        <div>
+          <div class="brand-title">本地文档库</div>
+          <div class="brand-sub">项目归档 · 周期合并</div>
+        </div>
+      </div>
+
+      <div class="side-section">
+        <div class="side-section-head">
+          <span>分类树</span>
+          <button class="icon-btn" id="btnAddCategory" title="新建分类">＋</button>
+        </div>
+        <div class="category-list" id="categoryList"></div>
+      </div>
+
+      <div class="side-footer">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">连接中…</span>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <main class="main">
+      <header class="topbar">
+        <div class="tabs">
+          <button class="tab active" data-view="compose">粘贴保存</button>
+          <button class="tab" data-view="projects">项目列表</button>
+          <button class="tab" data-view="period">周期文件</button>
+          <button class="tab" data-view="categories">分类管理</button>
+        </div>
+        <div class="topbar-right">
+          <input type="search" id="searchInput" class="search" placeholder="搜索项目标题或内容…" />
+        </div>
+      </header>
+
+      <!-- 粘贴保存 / 项目编辑 -->
+      <section class="view active" id="view-compose">
+        <div class="panel">
+          <div class="panel-head row">
+            <div>
+              <h2 id="composeTitle">新建项目</h2>
+              <p class="muted">每次粘贴保存一个项目信息；项目归属叶子分类，并按时间周期合并进同一 Word</p>
+            </div>
+            <div class="autosave-box">
+              <label class="chip">
+                <input type="checkbox" id="autosaveEnabled" checked /> 定时保存
+              </label>
+              <select id="autosaveSeconds" class="compact" title="自动保存间隔">
+                <option value="15">15 秒</option>
+                <option value="30" selected>30 秒</option>
+                <option value="60">60 秒</option>
+                <option value="120">2 分钟</option>
+              </select>
+              <span class="hint" id="autosaveStatus">草稿未启动</span>
+            </div>
+          </div>
+
+          <input type="hidden" id="projectId" value="" />
+
+          <div class="form-grid">
+            <label class="field">
+              <span>项目标题 <em>（可空，默认取首行）</em></span>
+              <input type="text" id="docTitle" placeholder="例如：XX招标项目谈判要点" />
+            </label>
+
+            <label class="field">
+              <span>归属分类（叶子） <em class="req">*</em></span>
+              <select id="docCategory"></select>
+            </label>
+          </div>
+
+          <div class="field">
+            <span>写入时间周期 <em>（可多选；同一叶子分类同一周期的所有项目合并到一个 Word）</em></span>
+            <div class="chips" id="timeModes">
+              <label class="chip"><input type="checkbox" value="week" checked /> 按周</label>
+              <label class="chip"><input type="checkbox" value="month" checked /> 按月</label>
+              <label class="chip"><input type="checkbox" value="quarter" checked /> 按季度</label>
+            </div>
+            <div class="hint" id="weekRuleHint"></div>
+            <div class="hint" id="timeHint"></div>
+          </div>
+
+          <div class="field">
+            <span>项目内容 <em class="req">*</em></span>
+            <textarea id="docContent" rows="14" placeholder="在此粘贴或输入该项目的相关信息…"></textarea>
+            <div class="textarea-meta">
+              <span id="charCount">0 字</span>
+              <button type="button" class="link-btn" id="btnClearContent">清空</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <span>附件 <em>（可选，支持多个）</em></span>
+            <div class="dropzone" id="dropzone">
+              <input type="file" id="fileInput" multiple hidden />
+              <div class="dropzone-inner">
+                <div class="dropzone-icon">📎</div>
+                <div>拖拽文件到此处，或 <button type="button" class="link-btn" id="btnPickFiles">点击选择</button></div>
+              </div>
+            </div>
+            <ul class="file-list" id="fileList"></ul>
+          </div>
+
+          <div class="actions">
+            <button class="btn primary" id="btnSave">正式保存到 Word</button>
+            <button class="btn ghost" id="btnSaveDraft">立即保存草稿</button>
+            <button class="btn ghost" id="btnReset">重置表单</button>
+          </div>
+
+          <div class="toast-area" id="toastArea"></div>
+        </div>
+      </section>
+
+      <!-- 项目列表 -->
+      <section class="view" id="view-projects">
+        <div class="panel">
+          <div class="panel-head row">
+            <div>
+              <h2>项目列表</h2>
+              <p class="muted">每个项目属于一个叶子分类；可继续编辑、删除</p>
+            </div>
+            <div class="row gap">
+              <select id="filterCategory" class="compact">
+                <option value="">全部分类</option>
+              </select>
+              <label class="chip">
+                <input type="checkbox" id="includeDraft" /> 含草稿
+              </label>
+              <button class="btn ghost" id="btnRefreshProjects">刷新</button>
+              <button class="btn primary" id="btnNewProject">新建项目</button>
+            </div>
+          </div>
+          <div class="doc-table-wrap">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>项目标题</th>
+                  <th>分类路径</th>
+                  <th>状态</th>
+                  <th>时间周期</th>
+                  <th>附件</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="projectTableBody">
+                <tr><td colspan="7" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 周期合并文件 -->
+      <section class="view" id="view-period">
+        <div class="panel">
+          <div class="panel-head row">
+            <div>
+              <h2>周期 Word 文件</h2>
+              <p class="muted">每个叶子分类 + 每个时间周期 → 一个合并 Word（包含该周期全部项目）</p>
+            </div>
+            <button class="btn ghost" id="btnRefreshPeriod">刷新</button>
+          </div>
+          <div class="doc-table-wrap">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>分类</th>
+                  <th>周期类型</th>
+                  <th>周期标签</th>
+                  <th>项目数</th>
+                  <th>文件</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="periodTableBody">
+                <tr><td colspan="7" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 分类管理 -->
+      <section class="view" id="view-categories">
+        <div class="panel">
+          <div class="panel-head row">
+            <div>
+              <h2>分类管理</h2>
+              <p class="muted">支持多级分类。项目只能挂在<strong>叶子分类</strong>（无子节点）；叶子分类需绑定本地目录用于存 Word/附件</p>
+            </div>
+            <button class="btn primary" id="btnAddCategory2">新建分类</button>
+          </div>
+          <div class="doc-table-wrap">
+            <table class="doc-table cat-table">
+              <thead>
+                <tr>
+                  <th style="width:28%">分类名称</th>
+                  <th style="width:10%">类型</th>
+                  <th style="width:18%">完整路径</th>
+                  <th style="width:18%">本地目录</th>
+                  <th style="width:8%">子类</th>
+                  <th style="width:8%">项目</th>
+                  <th style="width:10%">操作</th>
+                </tr>
+              </thead>
+              <tbody id="catTableBody">
+                <tr><td colspan="7" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 分类弹窗 -->
+  <dialog id="categoryDialog">
+    <form method="dialog" class="dialog-form" id="categoryForm">
+      <h3 id="categoryDialogTitle">新建分类</h3>
+      <input type="hidden" id="catId" />
+      <label class="field">
+        <span>名称 <em class="req">*</em></span>
+        <input type="text" id="catName" required placeholder="例如：招标项目" />
+      </label>
+      <label class="field">
+        <span>上级分类</span>
+        <select id="catParent"></select>
+        <div class="hint">不选则创建为顶级分类。可建多级，如：工作 / 招标 / 某地区</div>
+      </label>
+      <label class="field">
+        <span>本地目录 <em>（叶子分类建议设置）</em></span>
+        <div class="path-picker">
+          <input type="text" id="catPath" placeholder="可填绝对路径，或点击右侧浏览选择" />
+          <button type="button" class="btn ghost" id="btnBrowsePath">浏览…</button>
+        </div>
+        <div class="hint">只有挂项目的叶子分类需要本地目录；中间层级可不填。</div>
+      </label>
+      <label class="field">
+        <span>说明</span>
+        <input type="text" id="catDesc" placeholder="可选" />
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" id="btnCancelCat">取消</button>
+        <button type="submit" class="btn primary" id="btnSubmitCat">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 项目详情 -->
+  <dialog id="docDialog">
+    <div class="dialog-form">
+      <h3 id="docDialogTitle">项目详情</h3>
+      <div id="docDialogBody" class="doc-detail"></div>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" id="btnCloseDoc">关闭</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>
