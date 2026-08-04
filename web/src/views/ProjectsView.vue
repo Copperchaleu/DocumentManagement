@@ -247,6 +247,7 @@ async function onDelete(row) {
       width="680px"
       class="detail-dialog"
       destroy-on-close
+      append-to-body
     >
       <template v-if="detail">
         <el-descriptions :column="1" border>

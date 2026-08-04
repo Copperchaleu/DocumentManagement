@@ -1,0 +1,67 @@
+%% 时序图 1：进入工作面板 → 渲染三 Tab → 切换看板 Tab → 调 stats 接口 → 后端聚合 → 渲染指标卡+SVG
+sequenceDiagram
+    autonumber
+    actor User
+    participant WBV as WorkbenchView(外壳)
+    participant TB as TaskBoard(区域一)
+    participant DP as DashboardPanel(区域二)
+    participant API as StatsApi(前端)
+    participant BE as FastAPI(后端)
+    participant DB as Database
+
+    User->>WBV: 进入 /workbench
+    WBV->>TB: 挂载 onMounted → loadTasks()(localStorage)
+    WBV->>DP: 挂载(默认未激活，待 tab-change 再拉取)
+    WBV->>NotesPanel: 挂载(loadNotes from localStorage)
+    Note over WBV: el-tabs 默认 v-show 常驻挂载，三区域状态均保留
+
+    User->>WBV: 点击「数据看板」Tab
+    WBV->>DP: tab-change 触发 refresh()
+    DP->>API: getProjectStatsSummary()
+    API->>BE: GET /api/stats/projects-summary
+    BE->>DB: count_saved_projects_period()
+    DB-->>BE: {today, month, quarter}
+    BE-->>API: ProjectStatsSummary
+    DP->>API: getProjectStatsTrend('day')
+    API->>BE: GET /api/stats/projects-trend?range=day
+    BE->>DB: project_daily_counts(14)
+    DB-->>BE: [(label,count)...]
+    BE-->>API: ProjectStatsTrend
+    DP->>DP: 渲染 3 张指标卡(today/month/quarter)
+    DP->>TrendChart: 传入 labels/values 渲染 SVG
+    TrendChart-->>DP: 折线/柱状 SVG
+    DP-->>User: 看板展示(指标卡 + 趋势图)
+
+    User->>DP: 切换 range=month / quarter
+    DP->>API: getProjectStatsTrend(range)
+    API->>BE: GET /api/stats/projects-trend?range=month
+    BE->>DB: project_monthly_counts(6) / project_quarterly_counts(8)
+    DB-->>BE: [(label,count)...]
+    BE-->>API: ProjectStatsTrend
+    DP->>TrendChart: 重绘 SVG
+
+%% 时序图 2：随心记输入 → 存 localStorage → 列表刷新
+sequenceDiagram
+    autonumber
+    actor User
+    participant NP as NotesPanel(区域三)
+    participant LS as localStorage
+
+    User->>NP: 输入内容并回车/点击「保存」
+    NP->>NP: 构造 NoteItem{id, content, createdAt, updatedAt}
+    NP->>LS: setItem('document-management-workbench-notes-v1', JSON)
+    NP->>NP: notes.value = 读取/追加新项(置顶)
+    NP-->>User: 列表刷新(新增项可见、可编辑/删除)
+
+%% 时序图 3：待办初始化(零回归，localStorage 还原)
+sequenceDiagram
+    autonumber
+    participant WBV as WorkbenchView
+    participant TB as TaskBoard
+    participant LS as localStorage
+
+    WBV->>TB: onMounted
+    TB->>LS: getItem('document-management-workbench-tasks-v1')
+    LS-->>TB: JSON array
+    TB->>TB: 兼容旧百分比进度→completed 映射
+    TB-->>WBV: 待办列表/输入完整还原(切换 Tab 不丢)

@@ -68,3 +68,11 @@ export function periodDownloadUrl({ category_id, period_type, period_label }) {
 export function attachmentDownloadUrl(id) {
   return `/api/attachments/${id}/download`
 }
+
+// ---------- 工作面板 · 数据看板统计 ----------
+
+export const getProjectStatsSummary = () =>
+  http.get('/api/stats/projects-summary')
+
+export const getProjectStatsTrend = (range = 'day') =>
+  http.get('/api/stats/projects-trend', { params: { range } })

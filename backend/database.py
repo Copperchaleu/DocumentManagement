@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -150,6 +150,11 @@ class Database:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_period_versions_file "
                 "ON period_file_versions(period_file_id, version_no DESC)"
+            )
+            # 看板聚合按 created_at 归窗，补充索引提升统计性能
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_projects_created_at "
+                "ON projects(created_at)"
             )
 
     def _migrate(self) -> None:
@@ -1166,6 +1171,127 @@ class Database:
                 (period_file_id,),
             ).fetchone()
             return dict(row) if row else None
+
+    # ---------- 统计聚合（数据看板） ----------
+
+    def count_saved_projects_period(self) -> dict[str, int]:
+        """统计当期新增（仅 status='saved'）。
+
+        口径：按 created_at 本地日期归窗，与存储（Database._now 本地时间）一致。
+        - 当日：date(created_at) = date('now','localtime')
+        - 当月：strftime('%Y-%m', created_at) = strftime('%Y-%m','now','localtime')
+        - 当季：年份 + 季度序号 与当前一致
+        返回 {'today': int, 'month': int, 'quarter': int}
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE
+                        WHEN date(created_at) = date('now', 'localtime')
+                        THEN 1 ELSE 0 END) AS today,
+                    SUM(CASE
+                        WHEN strftime('%Y-%m', created_at)
+                             = strftime('%Y-%m', 'now', 'localtime')
+                        THEN 1 ELSE 0 END) AS month,
+                    SUM(CASE
+                        WHEN (strftime('%Y', created_at)
+                              || '-Q'
+                              || ((CAST(strftime('%m', created_at) AS INTEGER) - 1) / 3 + 1))
+                             = (strftime('%Y', 'now', 'localtime')
+                              || '-Q'
+                              || ((CAST(strftime('%m', 'now', 'localtime') AS INTEGER) - 1) / 3 + 1))
+                        THEN 1 ELSE 0 END) AS quarter
+                FROM projects
+                WHERE status = 'saved'
+                """
+            ).fetchone()
+        return {
+            "today": int(row["today"] or 0),
+            "month": int(row["month"] or 0),
+            "quarter": int(row["quarter"] or 0),
+        }
+
+    def project_daily_counts(self, days: int = 14) -> list[tuple[str, int]]:
+        """最近 days 天每日新增（status='saved'）。
+
+        返回 [(label 'MM-DD', count), ...] 按日期升序，无数据补 0。
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS cnt
+                FROM projects
+                WHERE status = 'saved'
+                GROUP BY day
+                """
+            ).fetchall()
+        counts = {r["day"]: int(r["cnt"]) for r in rows}
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        result: list[tuple[str, int]] = []
+        for offset in range(days - 1, -1, -1):
+            day = today - timedelta(days=offset)
+            full = day.strftime("%Y-%m-%d")
+            label = day.strftime("%m-%d")
+            result.append((label, counts.get(full, 0)))
+        return result
+
+    def project_monthly_counts(self, months: int = 6) -> list[tuple[str, int]]:
+        """最近 months 月每月新增（status='saved'）。
+
+        返回 [(label 'YYYY-MM', count), ...] 按月份升序，无数据补 0。
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT strftime('%Y-%m', created_at) AS m, COUNT(*) AS cnt
+                FROM projects
+                WHERE status = 'saved'
+                GROUP BY m
+                """
+            ).fetchall()
+        counts = {r["m"]: int(r["cnt"]) for r in rows}
+        now = datetime.now().replace(day=1)
+        result: list[tuple[str, int]] = []
+        for offset in range(months - 1, -1, -1):
+            month_index = now.month - offset
+            year = now.year
+            while month_index <= 0:
+                month_index += 12
+                year -= 1
+            while month_index > 12:
+                month_index -= 12
+                year += 1
+            label = f"{year}-{month_index:02d}"
+            result.append((label, counts.get(label, 0)))
+        return result
+
+    def project_quarterly_counts(self, quarters: int = 8) -> list[tuple[str, int]]:
+        """最近 quarters 季每季新增（status='saved'）。
+
+        返回 [(label 'YYYY-Qn', count), ...] 按季度升序，无数据补 0。
+        标签由 path_utils.list_recent_quarters 统一产出，保证前后端一致。
+        """
+        from .path_utils import list_recent_quarters
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT (strftime('%Y', created_at)
+                        || '-Q'
+                        || ((CAST(strftime('%m', created_at) AS INTEGER) - 1) / 3 + 1)
+                       ) AS q, COUNT(*) AS cnt
+                FROM projects
+                WHERE status = 'saved'
+                GROUP BY q
+                """
+            ).fetchall()
+        counts = {r["q"]: int(r["cnt"]) for r in rows}
+        result: list[tuple[str, int]] = []
+        for (_year, _quarter, label) in list_recent_quarters(quarters):
+            result.append((label, counts.get(label, 0)))
+        return result
 
     # ---------- helpers ----------
 

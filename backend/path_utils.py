@@ -123,3 +123,47 @@ def unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         i += 1
+
+
+def get_quarter_range(dt: datetime | None = None) -> dict[str, object]:
+    """返回指定日期所在季度的起止日期与标签。
+
+    - dt 缺省取当前本地时间
+    - 返回 {'year': int, 'quarter': int, 'label': 'YYYY-Qn',
+            'start': date, 'end': date}
+    """
+    now = dt or datetime.now()
+    year = now.year
+    quarter = (now.month - 1) // 3 + 1
+    start_month = (quarter - 1) * 3 + 1
+    start = datetime(year, start_month, 1).date()
+    end_month = start_month + 2
+    if end_month == 12:
+        end = datetime(year, 12, 31).date()
+    else:
+        end = (datetime(year, end_month + 1, 1) - timedelta(days=1)).date()
+    return {
+        "year": year,
+        "quarter": quarter,
+        "label": f"{year}-Q{quarter}",
+        "start": start,
+        "end": end,
+    }
+
+
+def list_recent_quarters(n: int = 8) -> list[tuple[int, int, str]]:
+    """按升序返回最近 n 个季度的 (year, quarter, label)。
+
+    用于趋势图零填充，保证轴标签连续且与聚合口径一致
+    （标签格式 'YYYY-Qn'，与 database.project_quarterly_counts 产出一致）。
+    """
+    now = datetime.now()
+    # 当前季度的全局序号：year * 4 + (季度 - 1)
+    current_index = now.year * 4 + ((now.month - 1) // 3)
+    result: list[tuple[int, int, str]] = []
+    for offset in range(n - 1, -1, -1):
+        index = current_index - offset
+        year = index // 4
+        quarter = index % 4 + 1
+        result.append((year, quarter, f"{year}-Q{quarter}"))
+    return result

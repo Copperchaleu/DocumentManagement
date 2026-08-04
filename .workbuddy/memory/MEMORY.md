@@ -11,3 +11,10 @@
 - 同一叶子分类 + 周/月/季 → 一个 Word；定时草稿 autosave_seconds=30
 - 按周=ISO 周（周一~周日）
 - UI 主题：靛蓝主色 `#4f46e5`，全局设计令牌在 `web/src/styles/app.css`
+
+## 工作面板 /workbench（v2 单页三栏并排，非选项卡）
+- `WorkbenchView.vue` = 全局 hero + `.workbench-columns` 三栏网格（待办/看板/随心记 同屏并排，非 tab）；待办整块抽到 `web/src/components/TaskBoard.vue`
+- 区域二·数据看板：`DashboardPanel.vue` + `TrendChart.vue`（自绘 SVG，零新依赖）
+- 区域三·随心记：`NotesPanel.vue`，localStorage key `document-management-workbench-notes-v1` `{id,content,createdAt,updatedAt}`
+- 后端统计：`GET /api/stats/projects-summary`、`GET /api/stats/projects-trend?range=day|month|quarter`；仅统计 `status='saved'`，按 `created_at` 本地日期归窗；窗口 14天/6月/8季
+- 待办 localStorage key 仍为 `document-management-workbench-tasks-v1`（抽取未改 key，零回归）

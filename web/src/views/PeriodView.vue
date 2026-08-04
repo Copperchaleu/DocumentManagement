@@ -334,6 +334,7 @@ async function onRestoreVersion(version) {
       title="Word 历史版本"
       width="820px"
       destroy-on-close
+      append-to-body
     >
       <div v-if="historyPeriodFile" class="history-summary">
         <div>{{ historyPeriodFile.word_filename }}</div>

@@ -1740,6 +1740,51 @@ def list_documents_compat(category_id: Optional[int] = None, keyword: Optional[s
     return {"items": adapted, "total": len(adapted)}
 
 
+# ---------- API：统计看板 ----------
+
+
+class ProjectStatsSummary(BaseModel):
+    """当期新增项目统计（仅 status='saved'）。"""
+
+    today: int
+    month: int
+    quarter: int
+
+
+class ProjectStatsTrend(BaseModel):
+    """新增项目趋势（轴标签与数值一一对应，按时间升序）。"""
+
+    range: str
+    labels: list[str]
+    values: list[int]
+
+
+@app.get("/api/stats/projects-summary", response_model=ProjectStatsSummary)
+def stats_projects_summary() -> ProjectStatsSummary:
+    """统计当日 / 当月 / 当季新增（status='saved'）。"""
+    return db.count_saved_projects_period()
+
+
+@app.get("/api/stats/projects-trend", response_model=ProjectStatsTrend)
+def stats_projects_trend(range: str = "day") -> ProjectStatsTrend:
+    """按 range=day|month|quarter 返回新增项目趋势（无数据补 0）。
+
+    range 非法值回退为 day。
+    """
+    if range == "month":
+        rows = db.project_monthly_counts(6)
+    elif range == "quarter":
+        rows = db.project_quarterly_counts(8)
+    else:
+        range = "day"
+        rows = db.project_daily_counts(14)
+    return ProjectStatsTrend(
+        range=range,
+        labels=[r[0] for r in rows],
+        values=[int(r[1]) for r in rows],
+    )
+
+
 # ---------- 静态前端 ----------
 
 if STATIC_DIR.exists():

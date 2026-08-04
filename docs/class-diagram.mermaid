@@ -1,0 +1,111 @@
+classDiagram
+    direction TB
+
+    class WorkbenchView {
+        - activeTab: string
+        + onTabChange(name)
+        + renderHero()
+    }
+
+    class TaskBoard {
+        - STORAGE_KEY: string
+        - tasks: Task[]
+        - permissionState: string
+        + loadTasks()
+        + saveTasks(value)
+        + openCreate(prefill)
+        + submitTask()
+        + removeTask(task)
+        + requestNotificationPermission()
+        + createTaskToday()
+        + enableNotifications()
+    }
+
+    class DashboardPanel {
+        - summary: ProjectStatsSummary
+        - trend: ProjectStatsTrend
+        - activeRange: string
+        + loadStats()
+        + loadTrend(range)
+        + refresh()
+    }
+
+    class NotesPanel {
+        - STORAGE_KEY: string
+        - notes: NoteItem[]
+        + loadNotes()
+        + addNote(content)
+        + updateNote(id, content)
+        + deleteNote(id)
+    }
+
+    class TrendChart {
+        - labels: string[]
+        - values: int[]
+        + renderSvg()
+    }
+
+    class StatsApi {
+        + getProjectStatsSummary() ProjectStatsSummary
+        + getProjectStatsTrend(range) ProjectStatsTrend
+    }
+
+    class Task {
+        + id: string
+        + title: string
+        + notes: string
+        + priority: string
+        + dueDate: string
+        + completed: boolean
+        + reminderAt: string
+        + createdAt: string
+        + updatedAt: string
+    }
+
+    class NoteItem {
+        + id: string
+        + content: string
+        + createdAt: string
+        + updatedAt: string
+    }
+
+    class ProjectStatsSummary {
+        + today: int
+        + month: int
+        + quarter: int
+    }
+
+    class ProjectStatsTrend {
+        + labels: string[]
+        + values: int[]
+    }
+
+    class Database {
+        + count_saved_projects_period() dict
+        + project_daily_counts(days) list
+        + project_monthly_counts(months) list
+        + project_quarterly_counts(quarters) list
+    }
+
+    class StatsEndpoints {
+        + GET /api/stats/projects-summary
+        + GET /api/stats/projects-trend(range)
+    }
+
+    class PathUtils {
+        + get_quarter_range(date) dict
+        + list_recent_quarters(n) list
+    }
+
+    WorkbenchView *-- TaskBoard : 区域一(待办)
+    WorkbenchView *-- DashboardPanel : 区域二(看板)
+    WorkbenchView *-- NotesPanel : 区域三(随心记)
+    DashboardPanel *-- TrendChart : 渲染趋势SVG
+    DashboardPanel ..> StatsApi : 调用
+    NotesPanel ..> NoteItem : 管理
+    TaskBoard ..> Task : 管理
+    StatsApi ..> StatsEndpoints : HTTP
+    StatsEndpoints ..> Database : 聚合查询
+    StatsEndpoints ..> ProjectStatsSummary : 响应
+    StatsEndpoints ..> ProjectStatsTrend : 响应
+    Database ..> PathUtils : 季度标签

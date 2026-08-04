@@ -103,6 +103,7 @@ defineExpose({ open })
     :title="editingId ? '编辑分类' : '新建分类'"
     width="560px"
     destroy-on-close
+    append-to-body
     class="category-dialog"
   >
     <el-form ref="formRef" :model="form" :rules="rules" label-position="top" class="cat-form">
