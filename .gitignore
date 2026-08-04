@@ -10,4 +10,4 @@ test_att.txt
 Thumbs.db
 web/node_modules/
 web/dist/
-frontend/dist/.vite/
+frontend/dist/

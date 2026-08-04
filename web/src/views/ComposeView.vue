@@ -123,15 +123,8 @@ const weekHint = computed(() => {
 })
 
 const timeHint = computed(() => {
-  const labels = appState.timeInfo?.labels || {}
   const modes = form.timeModes || []
-  const parts = []
-  if (modes.includes('week') && labels.week) parts.push(`by_week/${labels.week}/汇总.docx`)
-  if (modes.includes('month') && labels.month) parts.push(`by_month/${labels.month}/汇总.docx`)
-  if (modes.includes('quarter') && labels.quarter) parts.push(`by_quarter/${labels.quarter}/汇总.docx`)
-  return parts.length
-    ? `本分类本周期所有项目将合并写入：${parts.join('  +  ')}`
-    : '请至少选择一个时间周期'
+  return modes.length ? '' : '请至少选择一个时间周期'
 })
 
 function markDirty() {
@@ -358,9 +351,6 @@ onUnmounted(() => {
           <el-tag v-else size="small" type="info" effect="plain" round>新建</el-tag>
           <el-button plain class="reset-btn" @click="resetForm">重置表单</el-button>
         </div>
-        <p class="muted">
-          每次粘贴保存一个项目信息；可归属任意级分类（中间级/末级均可），并按时间周期合并进同一 Word
-        </p>
       </div>
 
       <div class="autosave-box">

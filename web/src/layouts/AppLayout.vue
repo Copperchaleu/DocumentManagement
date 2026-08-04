@@ -48,6 +48,12 @@ const tabs = [
   { name: 'categories', label: '分类管理' },
 ]
 
+const weekHint = computed(() => {
+  const week = appState.timeInfo?.week
+  if (!week) return '按周规则：ISO 周，周一至周日'
+  return `按周规则：ISO 周，周一至周日（本周 ${week.label}：${week.start} ~ ${week.end}）`
+})
+
 function onTabChange(name) {
   router.push({ name })
 }
@@ -165,6 +171,10 @@ onMounted(async () => {
             @change="onTabChange"
           />
         </div>
+        <div class="topbar-week">
+          <span class="week-dot" />
+          <span>{{ weekHint }}</span>
+        </div>
         <el-input
           v-model="keyword"
           clearable
@@ -250,6 +260,29 @@ onMounted(async () => {
 
 .topbar-nav {
   min-width: 0;
+}
+
+.topbar-week {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.08);
+  border: 1px solid rgba(79, 70, 229, 0.18);
+  color: #3730a3;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.topbar-week .week-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4f46e5;
+  flex-shrink: 0;
 }
 
 .topbar-search {
