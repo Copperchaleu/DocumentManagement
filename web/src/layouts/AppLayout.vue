@@ -81,7 +81,7 @@ function onSearch() {
 onMounted(async () => {
   const ok = await bootstrapApp()
   if (!ok) {
-    ElMessage.error('无法连接本地服务，请确认已运行 start.bat')
+    ElMessage.error('无法连接本地服务，请确认已运行当前平台的启动脚本')
   }
 })
 </script>

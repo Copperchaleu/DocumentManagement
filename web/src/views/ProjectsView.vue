@@ -138,7 +138,6 @@ async function onDelete(row) {
             {{ appState.projects?.length || 0 }} 条
           </el-tag>
         </div>
-        <p class="muted">每个项目属于一个最末级分类；可继续编辑、删除</p>
       </div>
       <div class="toolbar-row">
         <el-cascader

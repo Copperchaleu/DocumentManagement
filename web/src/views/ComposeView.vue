@@ -116,12 +116,6 @@ const categoryPath = computed({
   },
 })
 
-const weekHint = computed(() => {
-  const week = appState.timeInfo?.week
-  if (!week) return '按周规则：ISO 周，周一至周日'
-  return `按周规则：ISO 周，周一至周日（本周 ${week.label}：${week.start} ~ ${week.end}）`
-})
-
 const timeHint = computed(() => {
   const modes = form.timeModes || []
   return modes.length ? '' : '请至少选择一个时间周期'
@@ -404,7 +398,6 @@ onUnmounted(() => {
           <el-checkbox label="quarter" border>按季度</el-checkbox>
         </el-checkbox-group>
         <div class="hint-stack">
-          <div class="hint">{{ weekHint }}</div>
           <div class="hint path-hint">{{ timeHint }}</div>
         </div>
       </el-form-item>

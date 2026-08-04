@@ -1040,7 +1040,7 @@ async function boot() {
   } catch (e) {
     $("#statusDot").classList.add("err");
     $("#statusText").textContent = "服务未连接";
-    toast("无法连接本地服务，请确认已运行 start.bat", "err", 8000);
+    toast("无法连接本地服务，请确认已运行当前平台的启动脚本", "err", 8000);
   }
 }
 

@@ -39,7 +39,11 @@ CONFIG_PATH = ROOT_DIR / "config.json"
 FRONTEND_DIR = ROOT_DIR / "frontend"
 # Vue 构建产物优先；兼容旧原生静态前端
 FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
-STATIC_DIR = FRONTEND_DIST_DIR if FRONTEND_DIST_DIR.exists() else FRONTEND_DIR
+STATIC_DIR = (
+    FRONTEND_DIST_DIR
+    if (FRONTEND_DIST_DIR / "index.html").is_file()
+    else FRONTEND_DIR
+)
 
 
 def load_config() -> dict:
