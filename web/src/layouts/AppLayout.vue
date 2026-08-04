@@ -49,9 +49,14 @@ const tabs = [
 ]
 
 const weekHint = computed(() => {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  const today = `${y}-${m}-${d}`
   const week = appState.timeInfo?.week
-  if (!week) return '按周规则：ISO 周，周一至周日'
-  return `按周规则：ISO 周，周一至周日（本周 ${week.label}：${week.start} ~ ${week.end}）`
+  if (!week) return `今天 ${today}`
+  return `今天 ${today} · 第${week.iso_week}周`
 })
 
 function onTabChange(name) {
