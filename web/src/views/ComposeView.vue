@@ -142,7 +142,7 @@ function updateAutosaveStatus() {
   }
 }
 
-function resetForm() {
+function startNewProject(categoryId = null) {
   form.projectId = null
   form.title = ''
   form.content = ''
@@ -151,15 +151,13 @@ function resetForm() {
   dirty.value = false
   lastAutosaveAt.value = ''
   clientSaveToken.value = makeSaveToken()
-  // 保留当前分类选择；若为空则尝试沿用侧边栏选中，否则默认第一个叶子
-  if (!form.categoryId) {
-    if (appState.selectedCategoryId) {
-      form.categoryId = appState.selectedCategoryId
-    } else if (appState.leafCategories?.[0]) {
-      form.categoryId = appState.leafCategories[0].id
-    }
-  }
+  form.categoryId =
+    categoryId || appState.selectedCategoryId || appState.leafCategories?.[0]?.id || null
   updateAutosaveStatus()
+}
+
+function resetForm() {
+  startNewProject(form.categoryId)
 }
 
 function onCategoryCascaderChange(val) {
@@ -281,16 +279,14 @@ watch(
   { immediate: true },
 )
 
-// 侧边栏点选分类时同步到表单（任意级，不再限制仅叶子）
-watch(
-  () => appState.selectedCategoryId,
-  (id) => {
-    if (id) form.categoryId = id
-  },
-)
-
 watch(autosaveEnabled, restartAutosaveTimer)
 watch(autosaveSeconds, restartAutosaveTimer)
+
+function loadCreateRequest() {
+  const categoryId = Number(route.query.category)
+  sessionStorage.removeItem('edit_project_payload')
+  startNewProject(Number.isFinite(categoryId) && categoryId > 0 ? categoryId : null)
+}
 
 function loadEditPayload() {
   const raw = sessionStorage.getItem('edit_project_payload')
@@ -318,13 +314,15 @@ onMounted(async () => {
     autosaveSeconds.value = Number(appState.timeInfo.autosave_seconds)
   }
   if (route.query.edit) loadEditPayload()
+  else if (route.query.create) loadCreateRequest()
   restartAutosaveTimer()
 })
 
 watch(
-  () => route.query.edit,
-  (v) => {
-    if (v) loadEditPayload()
+  () => [route.query.edit, route.query.create],
+  ([edit, create], previous = []) => {
+    if (edit && edit !== previous[0]) loadEditPayload()
+    else if (create && create !== previous[1]) loadCreateRequest()
   },
 )
 

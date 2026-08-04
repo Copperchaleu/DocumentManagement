@@ -23,7 +23,22 @@ const keyword = computed({
 })
 
 const treeData = computed(() => toElTreeData(appState.categoryTree))
+const defaultExpandedCategoryIds = computed(() => {
+  const ids = []
+
+  function collect(nodes, depth = 1) {
+    for (const node of nodes || []) {
+      // 展开上一层以显示第二级；第二级自身保持收起，隐藏更深层级。
+      if (depth < 2 && node.children?.length) ids.push(node.id)
+      if (depth < 2 && node.children?.length) collect(node.children, depth + 1)
+    }
+  }
+
+  collect(treeData.value)
+  return ids
+})
 const activeTab = computed(() => route.name || 'compose')
+let createRequestSequence = 0
 
 // 左侧边栏折叠状态（默认展开）
 const sidebarCollapsed = ref(false)
@@ -67,8 +82,14 @@ function onTabChange(name) {
 
 function onTreeClick(data) {
   appState.selectedCategoryId = data.id
-  router.push({ name: 'projects' })
-  refreshProjects()
+  createRequestSequence += 1
+  router.push({
+    name: 'compose',
+    query: {
+      category: String(data.id),
+      create: `${Date.now()}-${createRequestSequence}`,
+    },
+  })
 }
 
 function openCreateCategory() {
@@ -131,7 +152,7 @@ onMounted(async () => {
             :data="treeData"
             node-key="id"
             highlight-current
-            default-expand-all
+            :default-expanded-keys="defaultExpandedCategoryIds"
             :expand-on-click-node="false"
             :current-node-key="appState.selectedCategoryId"
             empty-text="暂无分类"
