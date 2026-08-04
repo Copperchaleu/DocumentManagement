@@ -22,15 +22,20 @@ import {
 
 const route = useRoute()
 const editorRef = shallowRef()
-const editorMode = 'simple'
+const editorMode = 'default'
 const toolbarConfig = {
   toolbarKeys: [
     'headerSelect',
+    '|',
+    // 字体 / 字号：default 模式才注册，导出 Word 时已支持保留
+    'fontFamily',
+    'fontSize',
     '|',
     'bold',
     'italic',
     'underline',
     'through',
+    '|',
     'color',
     '|',
     'bulletedList',
@@ -40,6 +45,7 @@ const toolbarConfig = {
     'justifyLeft',
     'justifyCenter',
     'justifyRight',
+    'justifyJustify',
     '|',
     'insertLink',
     'undo',
@@ -418,7 +424,7 @@ onUnmounted(() => {
           />
         </div>
         <div class="content-meta">
-          <span class="hint">支持标题、粗体、列表、引用和链接等常用格式</span>
+          <span class="hint">支持字体、字号、标题、粗体、颜色、列表、引用与链接等（图片/视频/表情等无法导出 Word，已移除）</span>
           <span class="hint">{{ contentLength }} 字</span>
         </div>
       </el-form-item>

@@ -372,10 +372,6 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
     <div class="workbench-grid">
       <section class="workbench-card task-board">
         <header class="workbench-card-head">
-          <div>
-            <span class="section-kicker">TASKS</span>
-            <h2>待办事项</h2>
-          </div>
           <el-input v-model="keyword" class="task-search" clearable :prefix-icon="Search" placeholder="搜索待办…" />
         </header>
 
@@ -537,7 +533,7 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
 
 <style scoped>
 .task-board-page { --wb-indigo: #4f46e5; --wb-navy: #172554; }
-.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 16px 0; }
+.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 0 0 16px; }
 .metric-card { position: relative; overflow: hidden; min-height: 98px; padding: 14px 16px; border: 1px solid #e2e8f0; border-radius: 15px; background: rgba(255,255,255,.92); box-shadow: 0 5px 16px rgba(15, 23, 42, .045); }
 .metric-card > div:not(.metric-icon) { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .metric-card span { color: #475569; font-size: 13px; font-weight: 650; }
@@ -546,24 +542,24 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
 .metric-icon { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 8px; border-radius: 9px; }
 .metric-icon svg { width: 16px; }
 .metric-indigo .metric-icon { color: #4f46e5; background: #eef2ff; }.metric-amber .metric-icon { color: #d97706; background: #fffbeb; }.metric-emerald .metric-icon { color: #059669; background: #ecfdf5; }.metric-rose .metric-icon { color: #dc2626; background: #fff1f2; }
-.workbench-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(330px, .82fr); gap: 16px; align-items: start; }
+.workbench-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, .82fr); gap: 16px; align-items: start; }
 .workbench-side { display: grid; gap: 16px; }
 .workbench-card { border: 1px solid #dde5ef; border-radius: 19px; background: rgba(255,255,255,.96); box-shadow: 0 10px 30px rgba(15, 23, 42, .055); }
 .task-board { min-height: 540px; padding: 21px; }
 .workbench-card-head,.calendar-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .workbench-card h2 { margin: 3px 0 0; color: #172554; font-size: 19px; letter-spacing: -.02em; }
-.task-search { width: 220px; }
+.task-search { width: 100%; max-width: 240px; }
 .task-filter-row { display: flex; gap: 5px; margin: 20px 0 12px; padding: 4px; border-radius: 11px; background: #f1f5f9; }
 .task-filter-row button { flex: 1; min-height: 34px; padding: 5px 10px; border: 0; border-radius: 8px; background: transparent; color: #64748b; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; transition: .15s ease; }
 .task-filter-row button:hover { color: #312e81; }.task-filter-row button.active { color: #312e81; background: #fff; box-shadow: 0 2px 8px rgba(15,23,42,.08); }
 .task-list { display: grid; gap: 8px; max-height: 418px; padding-right: 3px; overflow: auto; }
-.task-item { display: grid; grid-template-columns: minmax(210px,.9fr) minmax(180px,1.1fr) auto; gap: 14px; align-items: center; min-height: 66px; padding: 9px 12px; border: 1px solid #e7edf4; border-left: 3px solid #818cf8; border-radius: 11px; background: #fff; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+.task-item { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto; gap: 14px; align-items: center; min-height: 66px; padding: 9px 12px; border: 1px solid #e7edf4; border-left: 3px solid #818cf8; border-radius: 11px; background: #fff; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
 .task-item:hover { transform: translateY(-1px); border-color: #c7d2fe; box-shadow: 0 7px 18px rgba(30,41,59,.07); }.task-item.overdue { border-left-color: #ef4444; }.task-item.completed { opacity: .7; border-left-color: #94a3b8; }
 .task-primary { display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 10px; align-items: center; min-width: 0; }
 .task-check { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1.5px solid #cbd5e1; border-radius: 7px; background: #fff; color: #fff; cursor: pointer; }.task-check:hover { border-color: #6366f1; }.completed .task-check { border-color: #4f46e5; background: #4f46e5; }.task-check svg { width: 13px; }
 .task-primary-copy { min-width: 0; }.task-primary-copy h3 { overflow: hidden; margin: 0 0 4px; color: #1e293b; font-size: 13px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }.completed .task-primary-copy h3 { text-decoration: line-through; color: #64748b; }
 .task-deadline { display: inline-flex; align-items: center; gap: 4px; color: #94a3b8; font-size: 10px; }.task-deadline svg { width: 11px; }.task-deadline.danger { color: #dc2626; font-weight: 650; }
-.task-details { min-width: 0; padding-left: 14px; border-left: 1px solid #edf2f7; }.task-details > p { overflow: hidden; margin: 0 0 5px; color: #475569; font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }.task-details > p.empty { color: #b0bac8; font-style: italic; }
+.task-details { min-width: 0; padding-left: 12px; }.task-details > p { overflow: hidden; margin: 0 0 5px; color: #475569; font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }.task-details > p.empty { color: #b0bac8; font-style: italic; }
 .task-detail-meta { display: flex; align-items: center; gap: 10px; overflow: hidden; color: #94a3b8; font-size: 9px; white-space: nowrap; }.priority-label,.reminder-label { display: inline-flex; align-items: center; gap: 4px; }.priority-label::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--priority-color); }.reminder-label { overflow: hidden; text-overflow: ellipsis; }.reminder-label svg { width: 10px; flex-shrink: 0; }
 .task-actions { display: flex; gap: 5px; }.task-actions :deep(.el-button + .el-button) { margin-left: 0; }.task-actions :deep(.el-button) { width: 30px; height: 30px; min-height: 30px; }
 .task-empty { display: grid; justify-items: center; padding: 82px 20px; text-align: center; }.empty-illustration { display: grid; place-items: center; width: 66px; height: 66px; border-radius: 22px; background: linear-gradient(135deg,#eef2ff,#e0e7ff); color: #6366f1; transform: rotate(-5deg); }.empty-illustration svg { width: 28px; }.task-empty h3 { margin: 20px 0 6px; font-size: 16px; color: #334155; }.task-empty p { margin: 0 0 18px; color: #94a3b8; font-size: 12px; }

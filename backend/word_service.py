@@ -145,9 +145,63 @@ def _atomic_save_docx(doc: Document, output_path: Path) -> Path:
     return write_docx_bytes_atomic(file_content, output_path)
 
 
-def _set_run_font(run, size_pt: float | None = None, color: RGBColor | None = None) -> None:
-    run.font.name = "Microsoft YaHei"
-    run._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
+# 含汉字即视为 CJK 字体的辅助正则（用于决定 eastAsia 字体）
+_CJK_FONT_RE = re.compile(r"[一-鿿]")
+# 已知的中日韩字体集合，作为正则的补充判断
+_CJK_FONT_NAMES = {
+    "Microsoft YaHei",
+    "微软雅黑",
+    "SimSun",
+    "宋体",
+    "SimHei",
+    "黑体",
+    "KaiTi",
+    "楷体",
+    "FangSong",
+    "仿宋",
+    "STSong",
+    "STKaiti",
+    "STHeiti",
+    "STFangsong",
+    "NSimSun",
+    "新宋体",
+    "Microsoft JhengHei",
+    "微軟正黑體",
+}
+
+
+def _is_cjk_font(name: str | None) -> bool:
+    """判断字体名是否为中日韩字体（保证中文在 Word 中可见）。"""
+    if not name:
+        return False
+    if _CJK_FONT_RE.search(name):
+        return True
+    return name in _CJK_FONT_NAMES
+
+
+def _set_run_font(
+    run,
+    size_pt: float | None = None,
+    color: RGBColor | None = None,
+    font_name: str | None = None,
+) -> None:
+    # 先设置 run.font.name，确保 rPr/rFonts 节点存在，避免 AttributeError
+    if font_name:
+        run.font.name = font_name
+        rpr = run._element.get_or_add_rPr()
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is None:
+            rfonts = OxmlElement("w:rFonts")
+            rpr.append(rfonts)
+        rfonts.set(qn("w:ascii"), font_name)
+        rfonts.set(qn("w:hAnsi"), font_name)
+        # 中日韩字体直接设为字体本身，否则中文回退到微软雅黑
+        east_asia = font_name if _is_cjk_font(font_name) else "微软雅黑"
+        rfonts.set(qn("w:eastAsia"), east_asia)
+    else:
+        run.font.name = "Microsoft YaHei"
+        run._element.get_or_add_rPr()
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
     if size_pt is not None:
         run.font.size = Pt(size_pt)
     if color is not None:
@@ -186,6 +240,8 @@ class _RichTextParser(HTMLParser):
             "strike": False,
             "color": None,
             "href": None,
+            "font_family": None,
+            "font_size": None,
         }
 
     @staticmethod
@@ -273,6 +329,25 @@ class _RichTextParser(HTMLParser):
         color = self._normalize_color(css.get("color") or attrs.get("color"))
         if color:
             style["color"] = color
+        # 字体：wangEditor 通过 <span style="font-family: 微软雅黑;"> 施加
+        font_family = css.get("font-family")
+        if font_family:
+            font_family = font_family.strip().strip('"').strip("'").strip()
+            if "," in font_family:
+                font_family = font_family.split(",", 1)[0].strip().strip('"').strip("'").strip()
+            style["font_family"] = font_family
+        # 字号：wangEditor 通过 <span style="font-size: 16px;"> 施加
+        font_size = css.get("font-size")
+        if font_size:
+            match = re.search(r"(\d+(?:\.\d+)?)\s*(px|pt|em|rem|%)?", font_size, re.IGNORECASE)
+            if match:
+                value = float(match.group(1))
+                unit = (match.group(2) or "px").lower()
+                if unit == "px":
+                    style["font_size"] = round(value * 0.75, 2)
+                elif unit == "pt":
+                    style["font_size"] = value
+                # 其他单位（em/rem/% 等）无法可靠换算，忽略
         if tag == "a" and attrs.get("href"):
             style["href"] = attrs["href"].strip()
         self._style_stack.append(style)
@@ -327,7 +402,7 @@ def html_to_plain_text(content: str) -> str:
 
 
 def _apply_run_style(run: Run, spec: dict[str, Any]) -> None:
-    _set_run_font(run)
+    _set_run_font(run, size_pt=spec.get("font_size"), font_name=spec.get("font_family"))
     run.bold = bool(spec.get("bold"))
     run.italic = bool(spec.get("italic"))
     run.underline = bool(spec.get("underline"))

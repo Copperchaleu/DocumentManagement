@@ -88,6 +88,8 @@ const greeting = computed(() => {
 .workbench-columns { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; margin-top: 18px; }
 /* 每栏作为容器查询的上下文，使内部组件随列宽自适应（见 TaskBoard / DashboardPanel 的 @container 规则） */
 .workbench-col { min-width: 0; display: flex; flex-direction: column; gap: 12px; container-type: inline-size; }
+/* 确保三个区域组件作为 flex 子项可被压缩（默认 min-width:auto 不压），侧边栏展开（main 变窄）时不撑开列宽、不溢出相邻列 */
+.workbench-col > * { min-width: 0; width: 100%; }
 .col-head { display: flex; align-items: baseline; gap: 10px; padding: 0 2px; }
 .col-head h2 { margin: 0; color: #172554; font-size: 18px; letter-spacing: -.02em; }
 

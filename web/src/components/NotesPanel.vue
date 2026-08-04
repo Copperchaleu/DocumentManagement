@@ -112,12 +112,6 @@ defineExpose({ loadNotes })
 <template>
   <div class="notes-panel">
     <section class="workbench-card notes-compose">
-      <header class="workbench-card-head">
-        <div>
-          <span class="section-kicker">NOTES</span>
-          <h2>随心记</h2>
-        </div>
-      </header>
       <el-input
         v-model="draft"
         type="textarea"
