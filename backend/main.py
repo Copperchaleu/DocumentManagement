@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import shutil
 import webbrowser
@@ -12,13 +14,12 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .database import Database
 from .path_utils import (
-    build_time_subdirs,
     ensure_dir,
     get_iso_week_range,
     get_time_labels,
@@ -28,8 +29,9 @@ from .word_service import (
     WordFileLockedError,
     WordFileWriteError,
     assert_word_writable,
-    create_period_word_document,
+    build_period_word_document,
     html_to_plain_text,
+    write_docx_bytes_atomic,
 )
 
 # ---------- 路径与配置 ----------
@@ -54,6 +56,10 @@ def load_config() -> dict:
         "default_docs_root": "data/documents",
         "auto_open_browser": True,
         "autosave_seconds": 30,
+        "db_backup_enabled": True,
+        "db_backup_dir": "data/backups",
+        "db_backup_interval_hours": 24,
+        "db_backup_keep": 7,
     }
     if CONFIG_PATH.exists():
         try:
@@ -75,7 +81,84 @@ ensure_dir(DEFAULT_DOCS_ROOT)
 
 db = Database(DB_PATH)
 
-app = FastAPI(title="本地文档管理系统", version="2.0.0")
+
+def resolve_backup_dir(raw_path: Optional[str] = None) -> Path:
+    raw = (
+        str(raw_path).strip()
+        if raw_path is not None
+        else str(CFG.get("db_backup_dir") or "data/backups").strip()
+    )
+    path = Path(raw or "data/backups").expanduser()
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    return path.resolve()
+
+
+def list_database_backup_paths() -> list[Path]:
+    backup_dir = resolve_backup_dir()
+    if not backup_dir.is_dir():
+        return []
+    return sorted(
+        (item for item in backup_dir.glob("app_*.db") if item.is_file()),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def prune_database_backups() -> list[Path]:
+    keep = max(1, int(CFG.get("db_backup_keep", 7) or 7))
+    removed: list[Path] = []
+    for stale in list_database_backup_paths()[keep:]:
+        try:
+            stale.unlink()
+            removed.append(stale)
+        except OSError:
+            pass
+    return removed
+
+
+def backup_database_if_due(
+    *,
+    force: bool = False,
+    raise_errors: bool = False,
+) -> Optional[Path]:
+    """按配置创建 SQLite 在线备份；失败不影响项目和 Word 主流程。"""
+    if not force and not CFG.get("db_backup_enabled", True):
+        return None
+    backup_dir = ensure_dir(resolve_backup_dir())
+    backups = list_database_backup_paths()
+    interval_seconds = max(
+        1,
+        int(CFG.get("db_backup_interval_hours", 24) or 24),
+    ) * 3600
+    if (
+        not force
+        and backups
+        and datetime.now().timestamp() - backups[0].stat().st_mtime < interval_seconds
+    ):
+        return None
+    output = backup_dir / f"app_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
+    try:
+        db.backup_to(output)
+        prune_database_backups()
+        return output
+    except Exception as exc:
+        if raise_errors:
+            raise
+        print(f"[backup] 数据库备份失败：{exc}")
+        return None
+
+
+def save_config() -> None:
+    """原子保存当前配置，避免写入中断损坏 config.json。"""
+    temp_path = CONFIG_PATH.with_name(CONFIG_PATH.name + ".writing.tmp")
+    temp_path.write_text(
+        json.dumps(CFG, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(CONFIG_PATH)
+
+app = FastAPI(title="本地文档管理系统", version="2.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -83,6 +166,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+backup_scheduler_task: Optional[asyncio.Task] = None
+
+
+async def database_backup_scheduler() -> None:
+    """每分钟检查一次是否达到自动备份间隔。"""
+    while True:
+        await asyncio.sleep(60)
+        if CFG.get("db_backup_enabled", True):
+            await asyncio.to_thread(backup_database_if_due)
+
+
+@app.on_event("startup")
+async def start_database_backup_scheduler() -> None:
+    global backup_scheduler_task
+    if backup_scheduler_task is None or backup_scheduler_task.done():
+        backup_scheduler_task = asyncio.create_task(database_backup_scheduler())
+
+
+@app.on_event("shutdown")
+async def stop_database_backup_scheduler() -> None:
+    global backup_scheduler_task
+    if backup_scheduler_task and not backup_scheduler_task.done():
+        backup_scheduler_task.cancel()
+        try:
+            await backup_scheduler_task
+        except asyncio.CancelledError:
+            pass
+    backup_scheduler_task = None
 
 
 # ---------- 数据模型 ----------
@@ -109,6 +221,13 @@ class ProjectDraftSave(BaseModel):
     category_id: Optional[int] = None
     content: str = ""
     time_modes: list[str] = Field(default_factory=lambda: ["week", "month", "quarter"])
+
+
+class DatabaseBackupSettingsUpdate(BaseModel):
+    enabled: bool = True
+    directory: str = Field(..., min_length=1, max_length=1000)
+    interval_hours: int = Field(..., ge=1, le=8760)
+    max_backups: int = Field(..., ge=1, le=1000)
 
 
 # ---------- 工具函数 ----------
@@ -293,12 +412,60 @@ def friendly_word_http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=f"保存失败：{exc}")
 
 
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def build_period_source_snapshot(
+    *,
+    category_path_names: list[str],
+    period_type: str,
+    period_label: str,
+    projects: list[dict],
+) -> tuple[str, str]:
+    """生成可审计、可稳定比较的 Word 数据来源快照。"""
+    snapshot_projects = []
+    for project in projects:
+        snapshot_projects.append(
+            {
+                "id": project.get("id"),
+                "title": project.get("title") or "",
+                "content": project.get("content") or "",
+                "created_at": project.get("created_at") or "",
+                "updated_at": project.get("updated_at") or "",
+                "attachments": [
+                    {
+                        "id": att.get("id"),
+                        "original_name": att.get("original_name") or "",
+                        "stored_name": att.get("stored_name") or "",
+                        "relative_path": att.get("relative_path") or "",
+                    }
+                    for att in (project.get("attachments") or [])
+                ],
+            }
+        )
+    snapshot = {
+        "category_path_names": category_path_names,
+        "period_type": period_type,
+        "period_label": period_label,
+        "projects": snapshot_projects,
+    }
+    raw = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return raw, _sha256(raw.encode("utf-8"))
+
+
 def rebuild_period_word(
     category_id: int,
     period_type: str,
     period_label: str,
+    change_reason: str = "项目数据更新",
 ) -> Optional[dict]:
-    """重建某个叶子分类 + 时间周期的合并 Word。"""
+    """生成新 Word 版本入库，并把该版本同步为本地最新文件。"""
     cat = db.get_category(category_id)
     if not cat:
         return None
@@ -319,9 +486,29 @@ def rebuild_period_word(
 
     projects = db.list_projects_for_period(category_id, period_type, period_label)
     path_names = db.get_category_path_names(category_id)
+    existing_period_file = db.get_period_file(category_id, period_type, period_label)
+    if existing_period_file and output.is_file():
+        current_version = db.get_current_period_file_version(
+            int(existing_period_file["id"])
+        )
+        if not current_version:
+            _archive_local_period_file(
+                existing_period_file,
+                output,
+                change_reason="生成新版本前收录现有本地文件",
+            )
+        elif (
+            existing_period_file.get("local_sync_status") == "synced"
+            and _sha256(output.read_bytes()) != current_version["file_sha256"]
+        ):
+            _archive_local_period_file(
+                existing_period_file,
+                output,
+                change_reason="生成新版本前收录本地 Word 手工修改",
+            )
+    assert_word_writable(output)
     try:
-        create_period_word_document(
-            output_path=output,
+        file_content = build_period_word_document(
             category_path_names=path_names,
             period_type=period_type,
             period_label=period_label,
@@ -329,15 +516,154 @@ def rebuild_period_word(
         )
     except (WordFileLockedError, WordFileWriteError):
         raise
+    snapshot_json, source_sha256 = build_period_source_snapshot(
+        category_path_names=path_names,
+        period_type=period_type,
+        period_label=period_label,
+        projects=projects,
+    )
     rel = str(Path(folder) / label / filename).replace("\\", "/")
-    return db.upsert_period_file(
+    saved = db.save_period_file_version(
         category_id=category_id,
         period_type=period_type,
         period_label=period_label,
         relative_path=rel,
         word_filename=filename,
         project_count=len(projects),
+        file_content=file_content,
+        file_sha256=_sha256(file_content),
+        source_sha256=source_sha256,
+        source_snapshot_json=snapshot_json,
+        change_reason=change_reason,
     )
+    period_file = saved["period_file"]
+    version = saved["version"]
+    if saved["version_created"]:
+        backup_database_if_due()
+    # 若数据源没有变化，使用数据库中既有版本字节，避免无意义的二进制漂移。
+    stored_content = bytes(version["file_content"])
+    try:
+        write_docx_bytes_atomic(stored_content, output)
+        db.mark_period_file_sync(period_file["id"], "synced")
+    except Exception as exc:
+        db.mark_period_file_sync(period_file["id"], "error", str(exc))
+        raise
+    result = db.get_period_file(category_id, period_type, period_label) or period_file
+    result["version_created"] = bool(saved["version_created"])
+    return result
+
+
+def _period_file_path(period_file: dict) -> Path:
+    category = db.get_category(int(period_file["category_id"]))
+    if not category:
+        raise HTTPException(404, "分类不存在")
+    return resolve_category_path(category.get("path") or "") / period_file["relative_path"]
+
+
+def _archive_local_period_file(
+    period_file: dict,
+    file_path: Path,
+    *,
+    change_reason: str,
+    create_backup: bool = True,
+) -> dict:
+    """把旧系统文件或检测到的本地手工改动收录为新的数据库版本。"""
+    content = file_path.read_bytes()
+    category_id = int(period_file["category_id"])
+    projects = db.list_projects_for_period(
+        category_id,
+        period_file["period_type"],
+        period_file["period_label"],
+    )
+    path_names = db.get_category_path_names(category_id)
+    snapshot_json, _ = build_period_source_snapshot(
+        category_path_names=path_names,
+        period_type=period_file["period_type"],
+        period_label=period_file["period_label"],
+        projects=projects,
+    )
+    file_sha256 = _sha256(content)
+    snapshot = json.loads(snapshot_json)
+    snapshot["archived_local_file_sha256"] = file_sha256
+    snapshot["archive_reason"] = change_reason
+    snapshot_json = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    # 本地手工文件与按项目生成的文件必须拥有不同来源指纹，
+    # 否则紧接着的自动重建会被误判为重复版本。
+    source_sha256 = _sha256(snapshot_json.encode("utf-8"))
+    saved = db.save_period_file_version(
+        category_id=category_id,
+        period_type=period_file["period_type"],
+        period_label=period_file["period_label"],
+        relative_path=period_file["relative_path"],
+        word_filename=period_file["word_filename"],
+        project_count=len(projects),
+        file_content=content,
+        file_sha256=file_sha256,
+        source_sha256=source_sha256,
+        source_snapshot_json=snapshot_json,
+        change_reason=change_reason,
+        force_new_version=True,
+    )
+    if create_backup:
+        backup_database_if_due()
+    db.mark_period_file_sync(saved["period_file"]["id"], "synced")
+    return db.get_period_file(
+        category_id,
+        period_file["period_type"],
+        period_file["period_label"],
+    ) or saved["period_file"]
+
+
+def ensure_period_file_local(period_file: dict) -> tuple[dict, Path]:
+    """确保本地文件与数据库当前版本一致；缺失时直接从 BLOB 恢复。"""
+    file_path = _period_file_path(period_file)
+    current = db.get_current_period_file_version(int(period_file["id"]))
+
+    if not current:
+        if file_path.exists():
+            period_file = _archive_local_period_file(
+                period_file,
+                file_path,
+                change_reason="升级时收录现有本地文件",
+            )
+            return period_file, file_path
+        rebuilt = rebuild_period_word(
+            int(period_file["category_id"]),
+            period_file["period_type"],
+            period_file["period_label"],
+            change_reason="本地与数据库均缺失时重建",
+        )
+        if not rebuilt:
+            raise HTTPException(404, "周期文件不存在")
+        return rebuilt, _period_file_path(rebuilt)
+
+    current_content = bytes(current["file_content"])
+    if file_path.exists():
+        local_hash = _sha256(file_path.read_bytes())
+        if local_hash == current["file_sha256"]:
+            db.mark_period_file_sync(int(period_file["id"]), "synced")
+            return period_file, file_path
+        if period_file.get("local_sync_status") == "synced":
+            # 已同步后内容再次变化，视为用户在 Word/WPS 中手工修改。
+            period_file = _archive_local_period_file(
+                period_file,
+                file_path,
+                change_reason="检测到本地 Word 手工修改",
+            )
+            return period_file, file_path
+
+    try:
+        write_docx_bytes_atomic(current_content, file_path)
+        db.mark_period_file_sync(int(period_file["id"]), "synced")
+    except Exception as exc:
+        db.mark_period_file_sync(int(period_file["id"]), "error", str(exc))
+        raise
+    return period_file, file_path
 
 
 def rebuild_project_periods(project: dict, modes: Optional[list[str]] = None) -> list[dict]:
@@ -415,7 +741,34 @@ def seed_default_categories() -> None:
             pass
 
 
+def backfill_existing_period_file_versions() -> int:
+    """升级时将已有本地 Word 原样收录为 V1，不重建、不改写文件。"""
+    archived = 0
+    for period_file in db.list_period_files():
+        if period_file.get("current_version_id"):
+            continue
+        try:
+            file_path = _period_file_path(period_file)
+            if not file_path.is_file():
+                continue
+            _archive_local_period_file(
+                period_file,
+                file_path,
+                change_reason="升级时收录现有本地文件",
+                create_backup=False,
+            )
+            archived += 1
+        except Exception as exc:
+            print(
+                f"[word-version] 收录现有文件失败："
+                f"{period_file.get('word_filename') or period_file.get('id')}：{exc}"
+            )
+    return archived
+
+
 seed_default_categories()
+backfilled_versions = backfill_existing_period_file_versions()
+backup_database_if_due(force=backfilled_versions > 0)
 
 
 # ---------- API：系统 ----------
@@ -426,7 +779,7 @@ def health():
     return {
         "ok": True,
         "app": "本地文档管理系统",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "root": str(ROOT_DIR),
         "data_dir": str(DATA_DIR),
@@ -443,6 +796,12 @@ def get_config():
         "host": CFG["host"],
         "port": CFG["port"],
         "autosave_seconds": int(CFG.get("autosave_seconds", 30)),
+        "db_backup": {
+            "enabled": bool(CFG.get("db_backup_enabled", True)),
+            "interval_hours": int(CFG.get("db_backup_interval_hours", 24)),
+            "keep": int(CFG.get("db_backup_keep", 7)),
+            "directory": str(resolve_backup_dir()),
+        },
         "week_rule": {
             "standard": "ISO 8601",
             "start_day_cn": "周一",
@@ -480,12 +839,171 @@ def get_time_info():
     }
 
 
-@app.post("/api/browse-folder")
-def browse_folder(initial_path: Optional[str] = None):
+def _backup_file_info(path: Path) -> dict:
+    stat = path.stat()
+    return {
+        "filename": path.name,
+        "path": str(path),
+        "size": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+    }
+
+
+def _database_backup_settings_payload() -> dict:
+    backups = list_database_backup_paths()
+    db_stat = DB_PATH.stat() if DB_PATH.exists() else None
+    return {
+        "settings": {
+            "enabled": bool(CFG.get("db_backup_enabled", True)),
+            "directory": str(CFG.get("db_backup_dir") or "data/backups"),
+            "resolved_directory": str(resolve_backup_dir()),
+            "interval_hours": int(CFG.get("db_backup_interval_hours", 24)),
+            "max_backups": int(CFG.get("db_backup_keep", 7)),
+        },
+        "database": {
+            "path": str(DB_PATH),
+            "size": db_stat.st_size if db_stat else 0,
+            "modified_at": (
+                datetime.fromtimestamp(db_stat.st_mtime).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                if db_stat
+                else ""
+            ),
+        },
+        "summary": {
+            "backup_count": len(backups),
+            "total_size": sum(item.stat().st_size for item in backups),
+            "latest_backup_at": (
+                datetime.fromtimestamp(backups[0].stat().st_mtime).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                if backups
+                else ""
+            ),
+        },
+    }
+
+
+def _resolve_backup_file(filename: str) -> Path:
+    safe_name = Path(filename).name
+    if (
+        safe_name != filename
+        or not safe_name.startswith("app_")
+        or Path(safe_name).suffix.lower() != ".db"
+    ):
+        raise HTTPException(400, "备份文件名无效")
+    backup_dir = resolve_backup_dir()
+    candidate = (backup_dir / safe_name).resolve()
+    if candidate.parent != backup_dir.resolve():
+        raise HTTPException(400, "备份文件路径无效")
+    if not candidate.is_file():
+        raise HTTPException(404, "数据库备份不存在")
+    return candidate
+
+
+@app.get("/api/settings/database-backup")
+def get_database_backup_settings():
+    return _database_backup_settings_payload()
+
+
+@app.put("/api/settings/database-backup")
+def update_database_backup_settings(body: DatabaseBackupSettingsUpdate):
+    directory = body.directory.strip()
+    try:
+        resolved_directory = ensure_dir(resolve_backup_dir(directory))
+    except Exception as exc:
+        raise HTTPException(400, f"备份目录不可用：{exc}")
+
+    previous = dict(CFG)
+    CFG.update(
+        {
+            "db_backup_enabled": body.enabled,
+            "db_backup_dir": directory,
+            "db_backup_interval_hours": body.interval_hours,
+            "db_backup_keep": body.max_backups,
+        }
+    )
+    try:
+        save_config()
+        removed = prune_database_backups()
+    except Exception as exc:
+        CFG.clear()
+        CFG.update(previous)
+        raise HTTPException(500, f"保存备份设置失败：{exc}")
+    payload = _database_backup_settings_payload()
+    payload["settings"]["resolved_directory"] = str(resolved_directory)
+    payload["removed_count"] = len(removed)
+    return payload
+
+
+@app.get("/api/database-backups")
+def list_database_backups():
+    items = [_backup_file_info(path) for path in list_database_backup_paths()]
+    return {"items": items, "total": len(items)}
+
+
+@app.post("/api/database-backups")
+def create_database_backup():
+    try:
+        output = backup_database_if_due(force=True, raise_errors=True)
+    except Exception as exc:
+        raise HTTPException(500, f"创建数据库备份失败：{exc}")
+    if not output:
+        raise HTTPException(500, "创建数据库备份失败")
+    return {"ok": True, "backup": _backup_file_info(output)}
+
+
+@app.get("/api/database-backups/{filename}/download")
+def download_database_backup(filename: str):
+    path = _resolve_backup_file(filename)
+    encoded = quote(path.name)
+    return FileResponse(
+        path=str(path),
+        filename=path.name,
+        media_type="application/vnd.sqlite3",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
+
+
+@app.delete("/api/database-backups/{filename}")
+def delete_database_backup(filename: str):
+    path = _resolve_backup_file(filename)
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise HTTPException(500, f"删除数据库备份失败：{exc}")
+    return {"ok": True, "deleted": path.name}
+
+
+@app.post("/api/database-backups/open-folder")
+def open_database_backup_folder():
+    import os
     import subprocess
     import sys
 
-    start_dir = str(DEFAULT_DOCS_ROOT)
+    path = ensure_dir(resolve_backup_dir())
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception as exc:
+        raise HTTPException(500, f"打开备份目录失败：{exc}")
+    return {"ok": True, "path": str(path)}
+
+
+@app.post("/api/browse-folder")
+def browse_folder(initial_path: Optional[str] = None, purpose: str = "category"):
+    import subprocess
+    import sys
+
+    start_dir = str(resolve_backup_dir() if purpose == "backup" else DEFAULT_DOCS_ROOT)
+    dialog_title = "请选择数据库备份目录" if purpose == "backup" else "请选择分类对应的本地目录"
     if initial_path:
         try:
             p = resolve_category_path(initial_path)
@@ -502,7 +1020,7 @@ def browse_folder(initial_path: Optional[str] = None):
             ps = (
                 "Add-Type -AssemblyName System.Windows.Forms; "
                 "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
-                "$f.Description = '请选择分类对应的本地目录'; "
+                f"$f.Description = '{dialog_title}'; "
                 "$f.ShowNewFolderButton = $true; "
                 f"$f.SelectedPath = '{safe_start}'; "
                 "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
@@ -541,7 +1059,7 @@ def browse_folder(initial_path: Optional[str] = None):
         root.withdraw()
         root.attributes("-topmost", True)
         selected = filedialog.askdirectory(
-            title="请选择分类对应的本地目录",
+            title=dialog_title,
             initialdir=start_dir or None,
         )
         root.destroy()
@@ -812,6 +1330,9 @@ async def save_project(
             month_label=month_label,
             quarter_label=quarter_label,
             status="saved",
+            clear_week="week" not in modes,
+            clear_month="month" not in modes,
+            clear_quarter="quarter" not in modes,
         )
     else:
         project = db.create_project(
@@ -867,7 +1388,12 @@ async def save_project(
     try:
         rebuild_set = {(cid, ptype, lab) for cid, ptype, lab, _ in targets}
         for cid, ptype, lab in sorted(rebuild_set):
-            pf = rebuild_period_word(cid, ptype, lab)
+            pf = rebuild_period_word(
+                cid,
+                ptype,
+                lab,
+                change_reason=f"保存项目 #{project['id']}",
+            )
             if pf:
                 period_files.append(pf)
     except (WordFileLockedError, WordFileWriteError, PermissionError, OSError) as e:
@@ -989,7 +1515,12 @@ def delete_project(project_id: int):
     # 重建剩余项目的周期 Word
     period_files = []
     for cid, ptype, lab in rebuild_set:
-        pf = rebuild_period_word(cid, ptype, lab)
+        pf = rebuild_period_word(
+            cid,
+            ptype,
+            lab,
+            change_reason=f"删除项目 #{project_id}",
+        )
         if pf:
             period_files.append(pf)
 
@@ -1044,6 +1575,7 @@ def list_period_files(
         except Exception:
             it["abs_path"] = ""
             it["exists"] = False
+        it["database_backed"] = bool(it.get("current_version_id"))
         # 补全全路径显示字段
         names = it.get("category_path_names") or []
         it["category_path_label"] = " / ".join([n for n in names if n]) or (it.get("category_name") or "")
@@ -1063,16 +1595,18 @@ def open_period_file(
     pf = db.get_period_file(category_id, period_type, period_label)
     if not pf:
         # 尝试重建
-        pf = rebuild_period_word(category_id, period_type, period_label)
+        pf = rebuild_period_word(
+            category_id,
+            period_type,
+            period_label,
+            change_reason="首次打开时重建",
+        )
     if not pf:
         raise HTTPException(404, "周期文件不存在")
-    cat = db.get_category(category_id)
-    if not cat:
-        raise HTTPException(404, "分类不存在")
-    fp = resolve_category_path(cat.get("path") or "") / pf["relative_path"]
-    if not fp.exists():
-        rebuild_period_word(category_id, period_type, period_label)
-        fp = resolve_category_path(cat.get("path") or "") / pf["relative_path"]
+    try:
+        pf, fp = ensure_period_file_local(pf)
+    except (WordFileLockedError, WordFileWriteError, PermissionError, OSError) as exc:
+        raise friendly_word_http_error(exc)
     if not fp.exists():
         raise HTTPException(404, f"文件不存在：{fp}")
     try:
@@ -1095,16 +1629,18 @@ def download_period_file(
 ):
     pf = db.get_period_file(category_id, period_type, period_label)
     if not pf:
-        pf = rebuild_period_word(category_id, period_type, period_label)
+        pf = rebuild_period_word(
+            category_id,
+            period_type,
+            period_label,
+            change_reason="首次下载时重建",
+        )
     if not pf:
         raise HTTPException(404, "周期文件不存在")
-    cat = db.get_category(category_id)
-    if not cat:
-        raise HTTPException(404, "分类不存在")
-    fp = resolve_category_path(cat.get("path") or "") / pf["relative_path"]
-    if not fp.exists():
-        rebuild_period_word(category_id, period_type, period_label)
-        fp = resolve_category_path(cat.get("path") or "") / pf["relative_path"]
+    try:
+        pf, fp = ensure_period_file_local(pf)
+    except (WordFileLockedError, WordFileWriteError, PermissionError, OSError) as exc:
+        raise friendly_word_http_error(exc)
     if not fp.exists():
         raise HTTPException(404, f"文件不存在：{fp}")
     filename = quote(fp.name)
@@ -1114,6 +1650,68 @@ def download_period_file(
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
+
+
+@app.get("/api/period-files/{period_file_id}/versions")
+def list_period_file_versions(period_file_id: int):
+    period_file = db.get_period_file_by_id(period_file_id)
+    if not period_file:
+        raise HTTPException(404, "周期文件不存在")
+    try:
+        ensure_period_file_local(period_file)
+    except (WordFileLockedError, WordFileWriteError, PermissionError, OSError) as exc:
+        raise friendly_word_http_error(exc)
+    period_file = db.get_period_file_by_id(period_file_id) or period_file
+    items = db.list_period_file_versions(period_file_id)
+    current_id = period_file.get("current_version_id")
+    for item in items:
+        item["is_current"] = item["id"] == current_id
+    return {"items": items, "period_file": period_file}
+
+
+@app.get("/api/period-file-versions/{version_id}/download")
+def download_period_file_version(version_id: int):
+    version = db.get_period_file_version(version_id)
+    if not version:
+        raise HTTPException(404, "Word 历史版本不存在")
+    stem = Path(version["word_filename"]).stem
+    filename_raw = f"{stem}_V{version['version_no']}.docx"
+    filename = quote(filename_raw)
+    return Response(
+        content=bytes(version["file_content"]),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+@app.post("/api/period-file-versions/{version_id}/restore")
+def restore_period_file_version(version_id: int):
+    source = db.get_period_file_version(version_id)
+    if not source:
+        raise HTTPException(404, "Word 历史版本不存在")
+    period_file = db.get_period_file_by_id(int(source["period_file_id"]))
+    if not period_file:
+        raise HTTPException(404, "周期文件不存在")
+    output = _period_file_path(period_file)
+    try:
+        assert_word_writable(output)
+        restored = db.restore_period_file_version(version_id)
+        if not restored:
+            raise HTTPException(404, "Word 历史版本不存在")
+        backup_database_if_due()
+        write_docx_bytes_atomic(bytes(restored["file_content"]), output)
+        db.mark_period_file_sync(int(source["period_file_id"]), "synced")
+    except HTTPException:
+        raise
+    except (WordFileLockedError, WordFileWriteError, PermissionError, OSError) as exc:
+        db.mark_period_file_sync(int(source["period_file_id"]), "error", str(exc))
+        raise friendly_word_http_error(exc)
+    refreshed = db.get_period_file_by_id(int(source["period_file_id"]))
+    return {
+        "ok": True,
+        "period_file": refreshed,
+        "restored_version_no": restored["version_no"],
+    }
 
 
 # 兼容旧文档 API（避免前端 404），转为项目列表

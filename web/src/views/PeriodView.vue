@@ -1,8 +1,14 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { appState, orderedCategories, refreshPeriodFiles } from '../stores/appState'
-import { openPeriodFile, periodDownloadUrl } from '../api'
+import {
+  listPeriodFileVersions,
+  openPeriodFile,
+  periodDownloadUrl,
+  periodVersionDownloadUrl,
+  restorePeriodFileVersion,
+} from '../api'
 import { toastError } from '../api/http'
 import {
   cascaderValueToId,
@@ -19,6 +25,10 @@ const catFilter = ref(null)
 const catFilterPath = ref([])
 const typeFilter = ref('')
 const dateFilter = ref(null)
+const historyVisible = ref(false)
+const historyLoading = ref(false)
+const historyPeriodFile = ref(null)
+const historyVersions = ref([])
 
 const categoryCascaderOptions = computed(() => toCascaderOptions(appState.categoryTree))
 
@@ -116,6 +126,61 @@ async function onOpen(row) {
     ElMessage.success('已请求用系统默认程序打开')
   } catch (e) {
     toastError(e)
+  }
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0)
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function localStatusText(row) {
+  if (row.local_sync_status === 'error') return '本地同步失败（打开时自动重试）'
+  if (row.local_sync_status === 'pending') return '数据库已更新，等待同步到本地'
+  return row.exists ? '本地最新文件存在' : '本地缺失（打开时从数据库恢复）'
+}
+
+async function loadHistory(periodFileId) {
+  historyLoading.value = true
+  try {
+    const data = await listPeriodFileVersions(periodFileId)
+    historyPeriodFile.value = data.period_file || null
+    historyVersions.value = data.items || []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+async function onHistory(row) {
+  historyVisible.value = true
+  historyVersions.value = []
+  historyPeriodFile.value = row
+  try {
+    await loadHistory(row.id)
+    await refreshPeriodFiles()
+  } catch (e) {
+    toastError(e, '读取 Word 历史版本失败')
+  }
+}
+
+async function onRestoreVersion(version) {
+  try {
+    await ElMessageBox.confirm(
+      `确认把 V${version.version_no} 恢复为当前 Word？本次恢复也会记录为一个新版本。`,
+      '恢复 Word 历史版本',
+      { type: 'warning' },
+    )
+    const data = await restorePeriodFileVersion(version.id)
+    ElMessage.success(`已恢复，并记录为 V${data.restored_version_no}`)
+    const periodFileId = historyPeriodFile.value?.id
+    await Promise.all([
+      periodFileId ? loadHistory(periodFileId) : Promise.resolve(),
+      refreshPeriodFiles(),
+    ])
+  } catch (e) {
+    if (e !== 'cancel') toastError(e, '恢复 Word 历史版本失败')
   }
 }
 </script>
@@ -228,8 +293,21 @@ async function onOpen(row) {
           <template #default="{ row }">
             <div class="file-cell">
               <div class="file-name" :title="row.word_filename">{{ row.word_filename }}</div>
-              <div class="file-status" :class="{ ok: row.exists, missing: !row.exists }">
-                {{ row.exists ? '文件存在' : '文件缺失（可点打开重建）' }}
+              <div
+                class="file-status"
+                :class="{
+                  ok: row.exists && row.local_sync_status === 'synced',
+                  missing: !row.exists || ['pending', 'error'].includes(row.local_sync_status),
+                }"
+                :title="row.last_sync_error || ''"
+              >
+                {{ localStatusText(row) }}
+              </div>
+              <div class="version-status" :class="{ backed: row.database_backed }">
+                <template v-if="row.database_backed">
+                  数据库 V{{ row.current_version_no }} · 共 {{ row.version_count }} 版
+                </template>
+                <template v-else>尚无数据库版本</template>
               </div>
             </div>
           </template>
@@ -239,9 +317,10 @@ async function onOpen(row) {
             <span class="time-text">{{ row.updated_at }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right" align="center">
+        <el-table-column label="操作" width="250" fixed="right" align="center">
           <template #default="{ row }">
             <div class="ops">
+              <el-button plain @click="onHistory(row)">版本</el-button>
               <el-button type="primary" plain @click="onOpen(row)">打开</el-button>
               <a class="download-btn" :href="periodDownloadUrl(row)" target="_blank">下载</a>
             </div>
@@ -249,6 +328,57 @@ async function onOpen(row) {
         </el-table-column>
       </el-table>
     </div>
+
+    <el-dialog
+      v-model="historyVisible"
+      title="Word 历史版本"
+      width="820px"
+      destroy-on-close
+    >
+      <div v-if="historyPeriodFile" class="history-summary">
+        <div>{{ historyPeriodFile.word_filename }}</div>
+        <span>数据库保存全部版本，本地目录只保留当前版本；恢复 Word 不会回滚项目数据</span>
+      </div>
+      <el-table
+        :data="historyVersions"
+        v-loading="historyLoading"
+        border
+        stripe
+        empty-text="暂无历史版本；首次保存或打开现有文件后会自动入库"
+      >
+        <el-table-column label="版本" width="92" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.is_current ? 'success' : 'info'" effect="plain" round>
+              V{{ row.version_no }}{{ row.is_current ? ' 当前' : '' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="生成时间" min-width="150" />
+        <el-table-column prop="change_reason" label="变化原因" min-width="180" />
+        <el-table-column prop="project_count" label="项目数" width="82" align="center" />
+        <el-table-column label="大小" width="90" align="right">
+          <template #default="{ row }">{{ formatBytes(row.file_size) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="165" align="center" fixed="right">
+          <template #default="{ row }">
+            <div class="history-ops">
+              <a
+                class="history-download"
+                :href="periodVersionDownloadUrl(row.id)"
+                target="_blank"
+              >下载</a>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :disabled="row.is_current"
+                @click="onRestoreVersion(row)"
+              >恢复</el-button>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -321,6 +451,16 @@ async function onOpen(row) {
   color: #b45309;
 }
 
+.version-status {
+  margin-top: 2px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.version-status.backed {
+  color: #4f46e5;
+}
+
 .time-text {
   color: #64748b;
   font-size: 12.5px;
@@ -332,6 +472,32 @@ async function onOpen(row) {
   align-items: center;
   justify-content: center;
   gap: 8px;
+}
+
+.history-summary {
+  margin-bottom: 14px;
+  color: #1e293b;
+  font-weight: 650;
+}
+
+.history-summary span {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.history-ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-download {
+  color: #4f46e5;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .ops :deep(.el-button) {

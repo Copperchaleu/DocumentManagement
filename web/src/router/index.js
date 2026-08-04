@@ -14,6 +14,12 @@ const routes = [
         meta: { title: '粘贴保存' },
       },
       {
+        path: 'workbench',
+        name: 'workbench',
+        component: () => import('../views/WorkbenchView.vue'),
+        meta: { title: '工作面板' },
+      },
+      {
         path: 'projects',
         name: 'projects',
         component: () => import('../views/ProjectsView.vue'),
@@ -30,6 +36,12 @@ const routes = [
         name: 'categories',
         component: () => import('../views/CategoriesView.vue'),
         meta: { title: '分类管理' },
+      },
+      {
+        path: 'settings',
+        name: 'settings',
+        component: () => import('../views/SettingsView.vue'),
+        meta: { title: '系统设置' },
       },
     ],
   },

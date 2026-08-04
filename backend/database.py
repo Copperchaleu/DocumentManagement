@@ -32,6 +32,19 @@ class Database:
         finally:
             conn.close()
 
+    def backup_to(self, backup_path: Path) -> Path:
+        """使用 SQLite 在线备份 API 创建一致性数据库快照。"""
+        backup_path = Path(backup_path)
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        source = sqlite3.connect(self.db_path)
+        destination = sqlite3.connect(backup_path)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+        return backup_path
+
     def _init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(
@@ -84,9 +97,30 @@ class Database:
                     relative_path TEXT NOT NULL,
                     word_filename TEXT NOT NULL,
                     project_count INTEGER DEFAULT 0,
+                    current_version_id INTEGER,
+                    current_sha256 TEXT DEFAULT '',
+                    current_source_sha256 TEXT DEFAULT '',
+                    local_sync_status TEXT NOT NULL DEFAULT 'unknown',
+                    last_sync_error TEXT DEFAULT '',
                     updated_at TEXT NOT NULL,
                     UNIQUE(category_id, period_type, period_label),
                     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS period_file_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period_file_id INTEGER NOT NULL,
+                    version_no INTEGER NOT NULL,
+                    file_content BLOB NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    file_sha256 TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL,
+                    project_count INTEGER DEFAULT 0,
+                    change_reason TEXT DEFAULT '',
+                    source_snapshot_json TEXT DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(period_file_id, version_no),
+                    FOREIGN KEY (period_file_id) REFERENCES period_files(id) ON DELETE CASCADE
                 );
                 """
             )
@@ -112,6 +146,10 @@ class Database:
                 )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_period_files_cat ON period_files(category_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_period_versions_file "
+                "ON period_file_versions(period_file_id, version_no DESC)"
             )
 
     def _migrate(self) -> None:
@@ -223,6 +261,25 @@ class Database:
                             ON attachments(project_id);
                         """
                     )
+
+            # Word 历史版本：旧库仅有 period_files 元数据，需要补充当前版本/同步字段。
+            if "period_files" in tables:
+                period_cols = {
+                    r["name"]
+                    for r in conn.execute("PRAGMA table_info(period_files)").fetchall()
+                }
+                additions = {
+                    "current_version_id": "INTEGER",
+                    "current_sha256": "TEXT DEFAULT ''",
+                    "current_source_sha256": "TEXT DEFAULT ''",
+                    "local_sync_status": "TEXT NOT NULL DEFAULT 'unknown'",
+                    "last_sync_error": "TEXT DEFAULT ''",
+                }
+                for col, col_type in additions.items():
+                    if col not in period_cols:
+                        conn.execute(
+                            f"ALTER TABLE period_files ADD COLUMN {col} {col_type}"
+                        )
 
     @staticmethod
     def _now() -> str:
@@ -761,6 +818,268 @@ class Database:
             ).fetchone()
             return dict(row)
 
+    def save_period_file_version(
+        self,
+        *,
+        category_id: int,
+        period_type: str,
+        period_label: str,
+        relative_path: str,
+        word_filename: str,
+        project_count: int,
+        file_content: bytes,
+        file_sha256: str,
+        source_sha256: str,
+        source_snapshot_json: str,
+        change_reason: str,
+        force_new_version: bool = False,
+    ) -> dict[str, Any]:
+        """原子更新周期索引并保存 Word BLOB 历史版本。"""
+        now = self._now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO period_files (
+                    category_id, period_type, period_label, relative_path,
+                    word_filename, project_count, local_sync_status,
+                    last_sync_error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?)
+                ON CONFLICT(category_id, period_type, period_label) DO UPDATE SET
+                    relative_path = excluded.relative_path,
+                    word_filename = excluded.word_filename,
+                    project_count = excluded.project_count,
+                    local_sync_status = 'pending',
+                    last_sync_error = '',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    category_id,
+                    period_type,
+                    period_label,
+                    relative_path,
+                    word_filename,
+                    project_count,
+                    now,
+                ),
+            )
+            period_row = conn.execute(
+                """
+                SELECT * FROM period_files
+                WHERE category_id = ? AND period_type = ? AND period_label = ?
+                """,
+                (category_id, period_type, period_label),
+            ).fetchone()
+            if not period_row:
+                raise RuntimeError("保存周期文件索引失败")
+
+            period_file_id = int(period_row["id"])
+            current_version = None
+            if period_row["current_version_id"]:
+                current_version = conn.execute(
+                    "SELECT * FROM period_file_versions WHERE id = ?",
+                    (period_row["current_version_id"],),
+                ).fetchone()
+
+            created = True
+            if (
+                not force_new_version
+                and current_version
+                and current_version["source_sha256"] == source_sha256
+            ):
+                version_row = current_version
+                created = False
+            else:
+                next_no = int(
+                    conn.execute(
+                        """
+                        SELECT COALESCE(MAX(version_no), 0) + 1
+                        FROM period_file_versions
+                        WHERE period_file_id = ?
+                        """,
+                        (period_file_id,),
+                    ).fetchone()[0]
+                )
+                cur = conn.execute(
+                    """
+                    INSERT INTO period_file_versions (
+                        period_file_id, version_no, file_content, file_size,
+                        file_sha256, source_sha256, project_count,
+                        change_reason, source_snapshot_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        period_file_id,
+                        next_no,
+                        sqlite3.Binary(file_content),
+                        len(file_content),
+                        file_sha256,
+                        source_sha256,
+                        project_count,
+                        change_reason,
+                        source_snapshot_json,
+                        now,
+                    ),
+                )
+                version_row = conn.execute(
+                    "SELECT * FROM period_file_versions WHERE id = ?",
+                    (cur.lastrowid,),
+                ).fetchone()
+
+            if not version_row:
+                raise RuntimeError("保存 Word 历史版本失败")
+
+            conn.execute(
+                """
+                UPDATE period_files SET
+                    current_version_id = ?, current_sha256 = ?,
+                    current_source_sha256 = ?, local_sync_status = 'pending',
+                    last_sync_error = '', updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    version_row["id"],
+                    version_row["file_sha256"],
+                    version_row["source_sha256"],
+                    now,
+                    period_file_id,
+                ),
+            )
+            refreshed = conn.execute(
+                "SELECT * FROM period_files WHERE id = ?", (period_file_id,)
+            ).fetchone()
+            return {
+                "period_file": dict(refreshed),
+                "version": dict(version_row),
+                "version_created": created,
+            }
+
+    def mark_period_file_sync(
+        self,
+        period_file_id: int,
+        status: str,
+        error: str = "",
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE period_files
+                SET local_sync_status = ?, last_sync_error = ?
+                WHERE id = ?
+                """,
+                (status, (error or "")[:1000], period_file_id),
+            )
+
+    def list_period_file_versions(self, period_file_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, period_file_id, version_no, file_size, file_sha256,
+                       source_sha256, project_count, change_reason, created_at
+                FROM period_file_versions
+                WHERE period_file_id = ?
+                ORDER BY version_no DESC
+                """,
+                (period_file_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_period_file_version(self, version_id: int) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT v.*, pf.category_id, pf.period_type, pf.period_label,
+                       pf.relative_path, pf.word_filename,
+                       pf.current_version_id, c.name AS category_name,
+                       c.path AS category_path
+                FROM period_file_versions v
+                JOIN period_files pf ON pf.id = v.period_file_id
+                JOIN categories c ON c.id = pf.category_id
+                WHERE v.id = ?
+                """,
+                (version_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_current_period_file_version(
+        self, period_file_id: int
+    ) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT v.*
+                FROM period_files pf
+                JOIN period_file_versions v ON v.id = pf.current_version_id
+                WHERE pf.id = ?
+                """,
+                (period_file_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def restore_period_file_version(self, version_id: int) -> Optional[dict[str, Any]]:
+        """复制历史版本为新的当前版本，保留一次完整的恢复审计记录。"""
+        source = self.get_period_file_version(version_id)
+        if not source:
+            return None
+        now = self._now()
+        period_file_id = int(source["period_file_id"])
+        with self.connect() as conn:
+            next_no = int(
+                conn.execute(
+                    """
+                    SELECT COALESCE(MAX(version_no), 0) + 1
+                    FROM period_file_versions
+                    WHERE period_file_id = ?
+                    """,
+                    (period_file_id,),
+                ).fetchone()[0]
+            )
+            cur = conn.execute(
+                """
+                INSERT INTO period_file_versions (
+                    period_file_id, version_no, file_content, file_size,
+                    file_sha256, source_sha256, project_count,
+                    change_reason, source_snapshot_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    period_file_id,
+                    next_no,
+                    sqlite3.Binary(source["file_content"]),
+                    source["file_size"],
+                    source["file_sha256"],
+                    source["source_sha256"],
+                    source["project_count"],
+                    f"恢复自版本 V{source['version_no']}",
+                    source.get("source_snapshot_json") or "",
+                    now,
+                ),
+            )
+            restored = conn.execute(
+                "SELECT * FROM period_file_versions WHERE id = ?",
+                (cur.lastrowid,),
+            ).fetchone()
+            if not restored:
+                raise RuntimeError("恢复 Word 历史版本失败")
+            conn.execute(
+                """
+                UPDATE period_files SET
+                    current_version_id = ?, current_sha256 = ?,
+                    current_source_sha256 = ?, project_count = ?,
+                    local_sync_status = 'pending', last_sync_error = '',
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    restored["id"],
+                    restored["file_sha256"],
+                    restored["source_sha256"],
+                    restored["project_count"],
+                    now,
+                    period_file_id,
+                ),
+            )
+            return dict(restored)
+
     def list_period_files(
         self,
         category_id: Optional[int] = None,
@@ -768,9 +1087,16 @@ class Database:
         period_label: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         sql = """
-            SELECT pf.*, c.name AS category_name, c.path AS category_path
+            SELECT pf.*, c.name AS category_name, c.path AS category_path,
+                   current_v.version_no AS current_version_no,
+                   current_v.file_size AS current_file_size,
+                   current_v.created_at AS current_version_created_at,
+                   (SELECT COUNT(*) FROM period_file_versions pv
+                    WHERE pv.period_file_id = pf.id) AS version_count
             FROM period_files pf
             JOIN categories c ON c.id = pf.category_id
+            LEFT JOIN period_file_versions current_v
+                   ON current_v.id = pf.current_version_id
             WHERE 1=1
         """
         params: list[Any] = []
@@ -807,10 +1133,37 @@ class Database:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT * FROM period_files
-                WHERE category_id = ? AND period_type = ? AND period_label = ?
+                SELECT pf.*,
+                       current_v.version_no AS current_version_no,
+                       current_v.file_size AS current_file_size,
+                       current_v.created_at AS current_version_created_at,
+                       (SELECT COUNT(*) FROM period_file_versions pv
+                        WHERE pv.period_file_id = pf.id) AS version_count
+                FROM period_files pf
+                LEFT JOIN period_file_versions current_v
+                       ON current_v.id = pf.current_version_id
+                WHERE pf.category_id = ? AND pf.period_type = ? AND pf.period_label = ?
                 """,
                 (category_id, period_type, period_label),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_period_file_by_id(self, period_file_id: int) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT pf.*, c.name AS category_name, c.path AS category_path,
+                       current_v.version_no AS current_version_no,
+                       current_v.file_size AS current_file_size,
+                       (SELECT COUNT(*) FROM period_file_versions pv
+                        WHERE pv.period_file_id = pf.id) AS version_count
+                FROM period_files pf
+                JOIN categories c ON c.id = pf.category_id
+                LEFT JOIN period_file_versions current_v
+                       ON current_v.id = pf.current_version_id
+                WHERE pf.id = ?
+                """,
+                (period_file_id,),
             ).fetchone()
             return dict(row) if row else None
 

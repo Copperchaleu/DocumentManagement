@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from html.parser import HTMLParser
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -89,8 +90,15 @@ def assert_word_writable(path: Path) -> None:
         raise WordFileLockedError(path)
 
 
-def _atomic_save_docx(doc: Document, output_path: Path) -> Path:
-    """先写临时文件再替换；占用时给出明确异常。"""
+def document_to_docx_bytes(doc: Document) -> bytes:
+    """把 python-docx 文档序列化为可写入数据库的完整 docx 字节。"""
+    buffer = BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
+def write_docx_bytes_atomic(file_content: bytes, output_path: Path) -> Path:
+    """将 docx 字节先写临时文件再替换；占用时给出明确异常。"""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     assert_word_writable(output_path)
@@ -102,7 +110,7 @@ def _atomic_save_docx(doc: Document, output_path: Path) -> Path:
                 tmp_path.unlink()
             except Exception:
                 pass
-        doc.save(str(tmp_path))
+        tmp_path.write_bytes(file_content)
         try:
             os.replace(str(tmp_path), str(output_path))
         except PermissionError as e:
@@ -126,6 +134,15 @@ def _atomic_save_docx(doc: Document, output_path: Path) -> Path:
             except Exception:
                 pass
     return output_path
+
+
+def _atomic_save_docx(doc: Document, output_path: Path) -> Path:
+    """兼容旧调用：先序列化文档，再原子写入。"""
+    try:
+        file_content = document_to_docx_bytes(doc)
+    except Exception as e:
+        raise WordFileWriteError(output_path, e) from e
+    return write_docx_bytes_atomic(file_content, output_path)
 
 
 def _set_run_font(run, size_pt: float | None = None, color: RGBColor | None = None) -> None:
@@ -421,20 +438,16 @@ def _add_paragraphs(doc: Document, content: str) -> None:
     flush()
 
 
-def create_period_word_document(
-    output_path: Path,
+def build_period_word_document(
     category_path_names: Iterable[str],
     period_type: str,
     period_label: str,
     projects: list[dict[str, Any]],
-) -> Path:
+) -> bytes:
     """
-    把同一叶子分类 + 同一时间周期的所有项目写入同一个 Word。
-    每次重建整个文件（内容完整、可重入）。
+    把同一分类 + 同一时间周期的所有项目生成成 docx 字节。
+    返回值可先保存进 SQLite，再同步为本地最新文件。
     """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     period_cn = {"week": "周", "month": "月", "quarter": "季度"}.get(period_type, period_type)
     cat_path = " / ".join([n for n in category_path_names if n]) or "未分类"
     title = f"{cat_path} · {period_cn}报 {period_label}"
@@ -483,7 +496,24 @@ def create_period_word_document(
             _add_rich_content(doc, project.get("content") or "")
             doc.add_paragraph("")  # 项目之间留空
 
-    return _atomic_save_docx(doc, output_path)
+    return document_to_docx_bytes(doc)
+
+
+def create_period_word_document(
+    output_path: Path,
+    category_path_names: Iterable[str],
+    period_type: str,
+    period_label: str,
+    projects: list[dict[str, Any]],
+) -> Path:
+    """兼容旧接口：生成 docx 字节并写入本地文件。"""
+    file_content = build_period_word_document(
+        category_path_names=category_path_names,
+        period_type=period_type,
+        period_label=period_label,
+        projects=projects,
+    )
+    return write_docx_bytes_atomic(file_content, output_path)
 
 
 # 兼容旧接口（若被引用）

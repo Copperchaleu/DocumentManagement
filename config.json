@@ -4,5 +4,9 @@
   "data_dir": "data",
   "default_docs_root": "data/documents",
   "auto_open_browser": true,
-  "autosave_seconds": 30
+  "autosave_seconds": 30,
+  "db_backup_enabled": true,
+  "db_backup_dir": "data/backups",
+  "db_backup_interval_hours": 24,
+  "db_backup_keep": 7
 }

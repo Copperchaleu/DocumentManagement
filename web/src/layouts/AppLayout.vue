@@ -42,10 +42,12 @@ try {
 } catch {}
 
 const tabs = [
+  { name: 'workbench', label: '工作面板' },
   { name: 'compose', label: '项目编辑' },
   { name: 'projects', label: '项目列表' },
   { name: 'period', label: '周期文件' },
   { name: 'categories', label: '分类管理' },
+  { name: 'settings', label: '系统设置' },
 ]
 
 const weekHint = computed(() => {
