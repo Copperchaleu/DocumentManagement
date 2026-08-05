@@ -126,9 +126,9 @@ function updateTimeHint() {
   const quarterLabel = labels?.quarter || "";
 
   const parts = [];
-  if (modes.includes("week") && weekLabel) parts.push(`by_week/${weekLabel}/汇总.docx`);
-  if (modes.includes("month") && monthLabel) parts.push(`by_month/${monthLabel}/汇总.docx`);
-  if (modes.includes("quarter") && quarterLabel) parts.push(`by_quarter/${quarterLabel}/汇总.docx`);
+  if (modes.includes("week") && weekLabel) parts.push(`by_week/${weekLabel}/汇总.md`);
+  if (modes.includes("month") && monthLabel) parts.push(`by_month/${monthLabel}/汇总.md`);
+  if (modes.includes("quarter") && quarterLabel) parts.push(`by_quarter/${quarterLabel}/汇总.md`);
 
   $("#timeHint").textContent = parts.length
     ? `本分类本周期所有项目将合并写入：${parts.join("  +  ")}`

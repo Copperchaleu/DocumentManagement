@@ -1,9 +1,9 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import '@wangeditor/editor/dist/css/style.css'
-import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
+import { MdEditor } from 'md-editor-v3'
+import 'md-editor-v3/lib/style.css'
 import {
   appState,
   refreshCategories,
@@ -19,43 +19,32 @@ import {
   makeSaveToken,
   toCascaderOptions,
 } from '../utils/tree'
+import { mdToPlainText } from '../utils/markdown'
 
 const route = useRoute()
-const editorRef = shallowRef()
-const editorMode = 'default'
-const toolbarConfig = {
-  toolbarKeys: [
-    'headerSelect',
-    '|',
-    // 字体 / 字号：default 模式才注册，导出 Word 时已支持保留
-    'fontFamily',
-    'fontSize',
-    '|',
-    'bold',
-    'italic',
-    'underline',
-    'through',
-    '|',
-    'color',
-    '|',
-    'bulletedList',
-    'numberedList',
-    'blockquote',
-    '|',
-    'justifyLeft',
-    'justifyCenter',
-    'justifyRight',
-    'justifyJustify',
-    '|',
-    'insertLink',
-    'undo',
-    'redo',
-  ],
-}
+
+// 仅保留迁移覆盖的能力：标题、粗体、斜体、删除线、有序/无序列表、引用、链接、撤销/重做。
+// 移除字体族、字号、文字颜色、段落对齐等富样式工具栏项（P1-3 从源头控制）。
+const toolbars = [
+  'bold',
+  'underline',
+  'italic',
+  'strikeThrough',
+  'title',
+  'quote',
+  'unorderedList',
+  'orderedList',
+  'link',
+  'codeRow',
+  'code',
+  'revoke',
+  'next',
+  'preview',
+  'fullscreen',
+]
+
 const editorConfig = {
-  placeholder: '在此粘贴或输入该项目的相关信息…',
-  scroll: true,
-  MENU_CONF: {},
+  placeholder: '在此用 Markdown 撰写该项目的相关信息…',
 }
 
 const form = reactive({
@@ -77,33 +66,13 @@ const clientSaveToken = ref(makeSaveToken())
 let autosaveTimer = null
 let autosaveBusy = false
 
-function htmlToPlainText(html = '') {
-  const source = String(html || '')
-  if (!source) return ''
-  const div = document.createElement('div')
-  div.innerHTML = source
-  return (div.textContent || div.innerText || '')
-    .replace(/\u00a0/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-const contentText = computed(() => htmlToPlainText(form.content))
+// 字数统计 / 判空：Markdown → 纯文本提取（与后端 html_to_plain_text 口径一致）。
+const contentText = computed(() => mdToPlainText(form.content))
 const contentLength = computed(() => contentText.value.length)
-
-function handleEditorCreated(editor) {
-  editorRef.value = editor
-}
 
 function handleEditorChange() {
   markDirty()
 }
-
-onBeforeUnmount(() => {
-  const editor = editorRef.value
-  if (editor == null) return
-  editor.destroy()
-})
 
 // 弹出式多级级联：悬停展开，任意中间级/末级均可选（checkStrictly）
 const categoryCascaderOptions = computed(() => toCascaderOptions(appState.categoryTree))
@@ -115,6 +84,7 @@ const categoryCascaderProps = {
   label: 'label',
   children: 'children',
 }
+
 const categoryPath = computed({
   get: () => getCategoryValuePath(form.categoryId, appState.categoryTree),
   set: (val) => {
@@ -248,6 +218,7 @@ async function onSave() {
   saveBusy.value = true
   try {
     const fd = new FormData()
+    // form.content 直接是 Markdown 字符串；后端嗅探 format 兜底（零契约变更）。
     fd.append('content', form.content)
     fd.append('category_id', String(form.categoryId))
     fd.append('title', form.title || '')
@@ -259,7 +230,7 @@ async function onSave() {
     }
     const project = await saveProject(fd)
     ElMessage.success(
-      `项目已保存：${project.title}；已更新 ${(project.period_files || []).length} 个周期 Word`,
+      `项目已保存：${project.title}；已更新 ${(project.period_files || []).length} 个周期 Markdown`,
     )
     resetForm()
     await Promise.all([refreshCategories(), refreshProjects(), refreshPeriodFiles(), refreshTimeInfo()])
@@ -268,8 +239,8 @@ async function onSave() {
     const maybeId = payload?.id || payload?.project_id || payload?.project?.id
     if (maybeId) form.projectId = Number(maybeId)
     let msg = e.friendlyMessage || e.message || '保存失败'
-    if (e?.response?.status === 423 || /占用|正在被打开|请先关闭|Word/.test(msg)) {
-      msg += ' 请关闭对应 Word/WPS 文件后，再点一次保存。系统会更新同一项目，不会重复创建。'
+    if (e?.response?.status === 423 || /占用|正在被打开|请先关闭|Markdown/.test(msg)) {
+      msg += ' 请关闭对应 Markdown 文件（或编辑器）后，再点一次保存。系统会更新同一项目，不会重复创建。'
     }
     ElMessage.error({ message: msg, duration: 8000, showClose: true })
   } finally {
@@ -302,9 +273,6 @@ function loadEditPayload() {
     form.projectId = p.id
     form.title = p.title || ''
     form.content = p.content || ''
-    // 防御：若编辑器已挂载（运行时路由切换进来的场景），立即写入内容，
-    // 避免 watch(modelValue) 的 setHtml 与编辑器异步初始化之间的竞态
-    if (editorRef.value) editorRef.value.setHtml(form.content || '')
     form.categoryId = p.category_id || null
     form.timeModes = p.time_modes?.length ? [...p.time_modes] : ['week', 'month', 'quarter']
     dirty.value = false
@@ -317,8 +285,8 @@ function loadEditPayload() {
   }
 }
 
-// 关键修复：在富文本编辑器挂载前同步加载表单数据，
-// 使 <Editor> 初始化时 modelValue 已含内容，避免 wangEditor 异步初始空 html 覆盖内容（偶发内容丢失）
+// 富文本编辑器挂载前同步加载表单数据，使 MdEditor 初始化时 v-model 已含内容，
+// 避免异步初始化空值覆盖已加载内容（MdEditor 使用 v-model 双向绑定）。
 if (route.query.edit) {
   loadEditPayload()
 } else if (route.query.create) {
@@ -341,7 +309,7 @@ watch(
   },
 )
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
   if (autosaveTimer) clearInterval(autosaveTimer)
 })
 </script>
@@ -404,7 +372,7 @@ onUnmounted(() => {
         </el-col>
       </el-row>
 
-      <el-form-item label="写入时间周期（可多选；同一最末级分类同一周期的所有项目合并到一个 Word）">
+      <el-form-item label="写入时间周期（可多选；同一最末级分类同一周期的所有项目合并到一个 Markdown 文档）">
         <el-checkbox-group v-model="form.timeModes" class="period-checks" @change="markDirty">
           <el-checkbox label="week" border>按周</el-checkbox>
           <el-checkbox label="month" border>按月</el-checkbox>
@@ -415,25 +383,19 @@ onUnmounted(() => {
         </div>
       </el-form-item>
 
-      <el-form-item label="项目内容 *">
-        <div class="rich-editor-shell">
-          <Toolbar
-            class="rich-toolbar"
-            :editor="editorRef"
-            :default-config="toolbarConfig"
-            :mode="editorMode"
-          />
-          <Editor
+      <el-form-item label="项目内容（Markdown）*">
+        <div class="md-editor-shell">
+          <MdEditor
             v-model="form.content"
-            class="rich-editor"
-            :default-config="editorConfig"
-            :mode="editorMode"
-            @on-created="handleEditorCreated"
-            @on-change="handleEditorChange"
+            :toolbars="toolbars"
+            :editor-config="editorConfig"
+            language="zh-CN"
+            :preview="true"
+            @onChange="handleEditorChange"
           />
         </div>
         <div class="content-meta">
-          <span class="hint">支持字体、字号、标题、粗体、颜色、列表、引用与链接等（图片/视频/表情等无法导出 Word，已移除）</span>
+          <span class="hint">支持标题、粗体、斜体、删除线、列表、引用与链接；纯展示样式（字体/字号/颜色/对齐）不保留</span>
           <span class="hint">{{ contentLength }} 字</span>
         </div>
       </el-form-item>
@@ -457,7 +419,7 @@ onUnmounted(() => {
 
       <div class="form-actions">
         <el-button type="primary" size="large" :loading="saveBusy" @click="onSave">
-          正式保存到 Word
+          正式保存到 Markdown
         </el-button>
         <el-button size="large" @click="doAutosave(true)">立即保存草稿</el-button>
       </div>
@@ -515,7 +477,7 @@ onUnmounted(() => {
   word-break: break-all;
 }
 
-.rich-editor-shell {
+.md-editor-shell {
   width: 100%;
   overflow: hidden;
   border: 1px solid #cbd5e1;
@@ -525,56 +487,16 @@ onUnmounted(() => {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.rich-editor-shell:focus-within {
+.md-editor-shell:focus-within {
   border-color: #3730a3;
   box-shadow: 0 0 0 3px rgba(55, 48, 163, 0.14);
 }
 
-.rich-toolbar {
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
-}
-
-.rich-editor {
-  min-height: 320px;
-  max-height: 560px;
-  overflow-y: auto;
-  background: #fff;
-}
-
-.rich-editor :deep(.w-e-text-container) {
-  min-height: 320px;
-  background: #fff;
-}
-
-.rich-editor :deep(.w-e-scroll) {
-  min-height: 320px;
-}
-
-.rich-editor :deep(.w-e-text-placeholder) {
-  color: #94a3b8;
-  font-style: normal;
-}
-
-.rich-editor :deep(.w-e-text-container [data-slate-editor]) {
-  padding: 16px 18px;
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.75;
-  color: #0f172a;
-}
-
-.rich-toolbar :deep(.w-e-bar-item button) {
-  min-width: 34px;
-  height: 34px;
-  color: #334155;
-  border-radius: 7px;
-}
-
-.rich-toolbar :deep(.w-e-bar-item button:hover),
-.rich-toolbar :deep(.w-e-bar-item button.active) {
-  color: #312e81;
-  background: #e8eaf8;
+.md-editor-shell :deep(.md-editor) {
+  height: 480px;
+  border: none;
+  border-radius: 12px;
+  z-index: auto;
 }
 
 .content-meta {

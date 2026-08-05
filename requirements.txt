@@ -1,6 +1,9 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
-python-docx==1.1.2
 python-multipart==0.0.20
 aiofiles==24.1.0
 pydantic==2.11.7
+markdownify==0.13.0   # HTML → Markdown（projects.content 迁移 + docx→html→md 复用）
+mistune==3.0.2        # 保留：往返校验 md_to_plain_text 依赖（P0-4 100% 门槛）；运行时应用不直接使用
+mammoth==1.8.0        # 历史 .docx BLOB → HTML → Markdown（迁移期一次性使用）
+# python-docx 已移除：Word 全链路移除，docx→md 由 mammoth 完成（设计 §6）

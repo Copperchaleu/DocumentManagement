@@ -1,0 +1,37 @@
+classDiagram
+    class Database {
+        +_ensure_period_version_columns()
+        +save_period_file_version(... md_content, file_format, file_content?)
+        +restore_period_file_version(id)  // 复制 md_content
+        +get_period_file_version(id)  // 返回 md_content+file_content
+    }
+    class MarkdownService {
+        +build_period_markdown_document(cat, type, label, projects) str
+        -_assemble_project_block(project) str
+    }
+    class MainAPI {
+        +rebuild_period_markdown(...)  // 取代 rebuild_period_word
+        +download_period_file_version(id)  // text/markdown
+        +restore_period_file_version(id)  // 写 .md
+    }
+    class MarkdownUtils {
+        +html_to_md(html) str
+        +docx_bytes_to_md(docx_bytes) tuple  // mammoth->markdownify + 损失标记
+        +md_to_html(md) str
+    }
+    class DocxMigrationScript {
+        +run(dry_run, limit)  // 遍历 file_format='docx'
+        -convert_one(version) tuple
+        -detect_loss(html) dict
+    }
+    class Mammoth {
+        <<external>>
+    }
+
+    Database ..> MarkdownService : 周期文档入库
+    MainAPI ..> Database : CRUD
+    MainAPI ..> MarkdownService : build md
+    MarkdownService ..> MarkdownUtils : html_to_md / md_to_html
+    DocxMigrationScript ..> Database : 读 docx BLOB / 写 md_content
+    DocxMigrationScript ..> MarkdownUtils : docx_bytes_to_md
+    MarkdownUtils ..> Mammoth : docx->html

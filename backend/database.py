@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Generator, Optional
+
+# 哨兵：用于区分「调用方未传（保持原值）」与「显式置空/置默认值」。
+_UNSET = object()
 
 
 class Database:
@@ -17,6 +21,10 @@ class Database:
         # 先迁移旧表结构，再创建新表/索引，避免 parent_id 等新列不存在时报错
         self._migrate()
         self._init_schema()
+        # 确保迁移所需新列存在（覆盖全新库与旧库）
+        self._ensure_migration_columns()
+        # 周期版本表新增 Markdown 文本列与格式标识（覆盖全新库与旧库）
+        self._ensure_period_version_columns()
 
     @contextmanager
     def connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -111,10 +119,12 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     period_file_id INTEGER NOT NULL,
                     version_no INTEGER NOT NULL,
-                    file_content BLOB NOT NULL,
-                    file_size INTEGER NOT NULL,
-                    file_sha256 TEXT NOT NULL,
-                    source_sha256 TEXT NOT NULL,
+                    file_content BLOB,
+                    md_content TEXT NOT NULL DEFAULT '',
+                    file_format TEXT NOT NULL DEFAULT 'md',
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    file_sha256 TEXT NOT NULL DEFAULT '',
+                    source_sha256 TEXT NOT NULL DEFAULT '',
                     project_count INTEGER DEFAULT 0,
                     change_reason TEXT DEFAULT '',
                     source_snapshot_json TEXT DEFAULT '',
@@ -267,7 +277,7 @@ class Database:
                         """
                     )
 
-            # Word 历史版本：旧库仅有 period_files 元数据，需要补充当前版本/同步字段。
+                # Word 历史版本：旧库仅有 period_files 元数据，需要补充当前版本/同步字段。
             if "period_files" in tables:
                 period_cols = {
                     r["name"]
@@ -285,6 +295,57 @@ class Database:
                         conn.execute(
                             f"ALTER TABLE period_files ADD COLUMN {col} {col_type}"
                         )
+
+    def _ensure_migration_columns(self) -> None:
+        """确保 ``projects`` 表含 Markdown 迁移所需新列。
+
+        同时覆盖「全新库」（_init_schema 创建的表不含新列）与「旧库」
+        （已存在但缺列的库），保证零停机迁移的安全底座一致可用。
+        """
+        with self.connect() as conn:
+            cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(projects)").fetchall()
+            }
+            if "content_format" not in cols:
+                conn.execute(
+                    "ALTER TABLE projects ADD COLUMN content_format TEXT NOT NULL DEFAULT 'html'"
+                )
+            if "content_html_backup" not in cols:
+                conn.execute("ALTER TABLE projects ADD COLUMN content_html_backup TEXT")
+            # 历史数据无论是否含 HTML，统一标记为 html 真源（默认分发）。
+            conn.execute(
+                "UPDATE projects SET content_format = 'html' "
+                "WHERE content_format IS NULL OR content_format = ''"
+            )
+
+    def _ensure_period_version_columns(self) -> None:
+        """确保 ``period_file_versions`` 表含 Markdown 迁移所需新列。
+
+        - ``md_content``：Markdown 文本真源列。
+        - ``file_format``：分发键（'docx' 历史真源 / 'md' 主流）。
+        保留 ``file_content`` BLOB 作为历史 docx 回滚备份。覆盖全新库
+        （_init_schema 已含新列）与旧库（已存在但缺列的库）两种演进路径。
+        """
+        with self.connect() as conn:
+            cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(period_file_versions)").fetchall()
+            }
+            if "file_format" not in cols:
+                conn.execute(
+                    "ALTER TABLE period_file_versions "
+                    "ADD COLUMN file_format TEXT NOT NULL DEFAULT 'docx'"
+                )
+            if "md_content" not in cols:
+                conn.execute(
+                    "ALTER TABLE period_file_versions ADD COLUMN md_content TEXT"
+                )
+            # 旧数据统一标记为 docx 真源（历史 BLOB 尚未迁移）。
+            conn.execute(
+                "UPDATE period_file_versions SET file_format = 'docx' "
+                "WHERE file_format IS NULL OR file_format = ''"
+            )
 
     @staticmethod
     def _now() -> str:
@@ -580,6 +641,8 @@ class Database:
         month_label: Optional[str],
         quarter_label: Optional[str],
         status: str = "saved",
+        content_format: str = "html",
+        content_html_backup: Optional[str] = None,
     ) -> dict[str, Any]:
         now = self._now()
         with self.connect() as conn:
@@ -587,8 +650,9 @@ class Database:
                 """
                 INSERT INTO projects (
                     title, category_id, content, content_preview, time_modes_json,
-                    week_label, month_label, quarter_label, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    week_label, month_label, quarter_label, status,
+                    content_format, content_html_backup, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     title,
@@ -600,6 +664,8 @@ class Database:
                     month_label,
                     quarter_label,
                     status,
+                    (content_format or "html").lower(),
+                    content_html_backup,
                     now,
                     now,
                 ),
@@ -622,6 +688,9 @@ class Database:
         clear_week: bool = False,
         clear_month: bool = False,
         clear_quarter: bool = False,
+        # 哨兵：传 _UNSET 表示「不修改」；传 None 表示「显式置空」。
+        content_format: object = _UNSET,
+        content_html_backup: object = _UNSET,
     ) -> Optional[dict[str, Any]]:
         current = self.get_project(project_id)
         if not current:
@@ -634,6 +703,14 @@ class Database:
             content_preview
             if content_preview is not None
             else current.get("content_preview") or ""
+        )
+        new_format = (
+            content_format if content_format is not _UNSET
+            else current.get("content_format") or "html"
+        )
+        new_backup = (
+            content_html_backup if content_html_backup is not _UNSET
+            else current.get("content_html_backup")
         )
         new_modes = (
             time_modes if time_modes is not None else (current.get("time_modes") or [])
@@ -662,7 +739,7 @@ class Database:
                 UPDATE projects SET
                     title = ?, category_id = ?, content = ?, content_preview = ?,
                     time_modes_json = ?, week_label = ?, month_label = ?, quarter_label = ?,
-                    status = ?, updated_at = ?
+                    status = ?, content_format = ?, content_html_backup = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -675,6 +752,8 @@ class Database:
                     new_month,
                     new_quarter,
                     new_status,
+                    (new_format or "html").lower(),
+                    new_backup,
                     now,
                     project_id,
                 ),
@@ -900,15 +979,27 @@ class Database:
         relative_path: str,
         word_filename: str,
         project_count: int,
-        file_content: bytes,
-        file_sha256: str,
-        source_sha256: str,
-        source_snapshot_json: str,
-        change_reason: str,
+        md_content: str = "",
+        file_content: Optional[bytes] = None,
+        file_format: str = "md",
+        file_sha256: str = "",
+        source_sha256: str = "",
+        source_snapshot_json: str = "",
+        change_reason: str = "",
         force_new_version: bool = False,
     ) -> dict[str, Any]:
-        """原子更新周期索引并保存 Word BLOB 历史版本。"""
+        """原子更新周期索引并保存 Markdown 历史版本。
+
+        - ``md_content`` 为真源 Markdown 文本；``file_size`` 由
+          ``len(md_content.encode('utf-8'))`` 推导。
+        - ``file_content`` 仅作历史 docx 回滚备份（迁移期填，平时为 NULL）。
+        - ``file_format`` 分发键：'md'（主流）/ 'docx'（迁移前/未迁）。
+        """
         now = self._now()
+        md_bytes = md_content.encode("utf-8")
+        # 优先用 md 内容指纹；若只有 docx 备份（过渡期）则用其指纹。
+        stored_sha256 = file_sha256 or hashlib.sha256(md_bytes).hexdigest()
+        file_size = len(md_bytes)
         with self.connect() as conn:
             conn.execute(
                 """
@@ -975,17 +1066,19 @@ class Database:
                 cur = conn.execute(
                     """
                     INSERT INTO period_file_versions (
-                        period_file_id, version_no, file_content, file_size,
-                        file_sha256, source_sha256, project_count,
-                        change_reason, source_snapshot_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        period_file_id, version_no, file_content, md_content,
+                        file_format, file_size, file_sha256, source_sha256,
+                        project_count, change_reason, source_snapshot_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         period_file_id,
                         next_no,
-                        sqlite3.Binary(file_content),
-                        len(file_content),
-                        file_sha256,
+                        sqlite3.Binary(file_content) if file_content is not None else None,
+                        md_content,
+                        file_format,
+                        file_size,
+                        stored_sha256,
                         source_sha256,
                         project_count,
                         change_reason,
@@ -1109,15 +1202,18 @@ class Database:
             cur = conn.execute(
                 """
                 INSERT INTO period_file_versions (
-                    period_file_id, version_no, file_content, file_size,
-                    file_sha256, source_sha256, project_count,
-                    change_reason, source_snapshot_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    period_file_id, version_no, file_content, md_content,
+                    file_format, file_size, file_sha256, source_sha256,
+                    project_count, change_reason, source_snapshot_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     period_file_id,
                     next_no,
-                    sqlite3.Binary(source["file_content"]),
+                    sqlite3.Binary(source["file_content"])
+                    if source.get("file_content") is not None else None,
+                    source.get("md_content") or "",
+                    source.get("file_format") or "docx",
                     source["file_size"],
                     source["file_sha256"],
                     source["source_sha256"],

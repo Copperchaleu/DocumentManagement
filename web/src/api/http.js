@@ -10,13 +10,13 @@ function extractErrorMessage(error) {
   const status = error?.response?.status
   const data = error?.response?.data
   if (!data) {
-    if (status === 423) return 'Word 文件正在被打开，请先关闭后再保存'
+    if (status === 423) return 'Markdown 文件正在被打开，请先关闭后再保存'
     if (status >= 500) return '服务器内部错误，请稍后重试'
     return error?.message || '请求失败'
   }
   if (typeof data === 'string') {
     if (/internal server error/i.test(data)) {
-      return '服务器内部错误。若刚打开了 Word，请先关闭对应 Word 文件后再保存。'
+      return '服务器内部错误。若刚打开了 Markdown 文件，请先关闭对应文件后再保存。'
     }
     return data
   }

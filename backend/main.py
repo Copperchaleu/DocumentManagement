@@ -1,10 +1,11 @@
-"""本地文档管理系统 — FastAPI 入口（多级分类 + 项目 + 周期合并 Word）。"""
+"""本地文档管理系统 — FastAPI 入口（多级分类 + 项目 + 周期合并 Markdown）。"""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import webbrowser
 from datetime import datetime
@@ -19,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .database import Database
+from .markdown_utils import get_plain_text, sniff_content_format
 from .path_utils import (
     ensure_dir,
     get_iso_week_range,
@@ -28,10 +30,8 @@ from .path_utils import (
 from .word_service import (
     WordFileLockedError,
     WordFileWriteError,
-    assert_word_writable,
-    build_period_word_document,
-    html_to_plain_text,
-    write_docx_bytes_atomic,
+    build_period_markdown_document,
+    write_file_atomic,
 )
 
 # ---------- 路径与配置 ----------
@@ -301,7 +301,7 @@ def default_category_path(name: str, parent_id: Optional[int]) -> str:
 
 
 def period_word_path(category: dict, period_type: str, period_label: str) -> Path:
-    """计算某叶子分类 + 周期对应的 Word 绝对路径。"""
+    """计算某叶子分类 + 周期对应的周期文件绝对路径（现为 ``.md``）。"""
     cat_path = resolve_category_path(category.get("path") or "")
     labels_map = {
         "week": "by_week",
@@ -310,7 +310,7 @@ def period_word_path(category: dict, period_type: str, period_label: str) -> Pat
     }
     folder = labels_map[period_type]
     filename = (
-        f"{sanitize_filename(category['name'])}_{period_type}_{period_label}.docx"
+        f"{sanitize_filename(category['name'])}_{period_type}_{period_label}.md"
     )
     return cat_path / folder / period_label / filename
 
@@ -367,13 +367,14 @@ def collect_period_targets(
 
 def precheck_period_files_writable(targets: list[tuple[int, str, str, Path]]) -> None:
     """
-    写入前检查所有目标 Word 是否可写。
-    任一文件被 Word/WPS 打开时，提前失败，避免半成功重复入库。
+    写入前检查所有目标周期文件是否可写。
+    任一已存在文件不可写（被其它程序占用）时，提前失败，避免半成功重复入库。
     """
     locked: list[str] = []
     for _cid, ptype, lab, path in targets:
         try:
-            assert_word_writable(path)
+            if path.exists() and not os.access(str(path), os.W_OK):
+                raise WordFileLockedError(path)
         except WordFileLockedError:
             locked.append(f"{ptype}/{lab} → {path}")
     if locked:
@@ -381,42 +382,39 @@ def precheck_period_files_writable(targets: list[tuple[int, str, str, Path]]) ->
         raise HTTPException(
             status_code=423,
             detail=(
-                "目标 Word 文件正在被打开，无法保存。"
-                "请先关闭 Microsoft Word / WPS 中对应文件后重试。"
+                "目标文件正在被打开，无法保存。"
+                "请先关闭对应文件（或编辑器）后重试。"
                 f" 占用文件：{detail}"
             ),
         )
 
 
 def friendly_word_http_error(exc: Exception) -> HTTPException:
-    """将 Word 写入异常转为明确的 HTTP 错误。"""
+    """将文件写入异常转为明确的 HTTP 错误。"""
     if isinstance(exc, WordFileLockedError):
         return HTTPException(
             status_code=423,
             detail=(
-                "目标 Word 文件正在被打开，无法写入。"
-                "请先关闭 Microsoft Word / WPS 中的该文件后再保存。"
+                "目标文件正在被打开，无法写入。"
+                "请先关闭对应文件（或编辑器）后再保存。"
                 f" 文件：{exc.path}"
             ),
         )
     if isinstance(exc, WordFileWriteError):
         return HTTPException(
             status_code=500,
-            detail=f"写入 Word 失败：{exc.path}。原因：{exc.cause or exc}",
+            detail=f"写入失败：{exc.path}。原因：{exc.cause or exc}",
         )
     # PermissionError 兜底
     if isinstance(exc, PermissionError):
         return HTTPException(
             status_code=423,
-            detail=(
-                "没有写入权限，或 Word 文件正被占用。"
-                "请关闭相关 Word/WPS 文件后重试。"
-            ),
+            detail="没有写入权限，或文件正被其它程序占用。请关闭相关文件后重试。",
         )
     if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 32:
         return HTTPException(
             status_code=423,
-            detail="文件正被其他程序占用（通常是 Word 已打开）。请关闭后重试。",
+            detail="文件正被其他程序占用。请关闭后重试。",
         )
     return HTTPException(status_code=500, detail=f"保存失败：{exc}")
 
@@ -468,13 +466,13 @@ def build_period_source_snapshot(
     return raw, _sha256(raw.encode("utf-8"))
 
 
-def rebuild_period_word(
+def rebuild_period_markdown(
     category_id: int,
     period_type: str,
     period_label: str,
     change_reason: str = "项目数据更新",
 ) -> Optional[dict]:
-    """生成新 Word 版本入库，并把该版本同步为本地最新文件。"""
+    """生成新 Markdown 版本入库，并把该版本同步为本地最新 .md 文件。"""
     cat = db.get_category(category_id)
     if not cat:
         return None
@@ -490,7 +488,7 @@ def rebuild_period_word(
         return None
     folder, label = labels_map[period_type]
     dest_dir = ensure_dir(cat_path / folder / label)
-    filename = f"{sanitize_filename(cat['name'])}_{period_type}_{label}.docx"
+    filename = f"{sanitize_filename(cat['name'])}_{period_type}_{label}.md"
     output = dest_dir / filename
 
     projects = db.list_projects_for_period(category_id, period_type, period_label)
@@ -513,18 +511,14 @@ def rebuild_period_word(
             _archive_local_period_file(
                 existing_period_file,
                 output,
-                change_reason="生成新版本前收录本地 Word 手工修改",
+                change_reason="生成新版本前收录本地 Markdown 手工修改",
             )
-    assert_word_writable(output)
-    try:
-        file_content = build_period_word_document(
-            category_path_names=path_names,
-            period_type=period_type,
-            period_label=period_label,
-            projects=projects,
-        )
-    except (WordFileLockedError, WordFileWriteError):
-        raise
+    md_content = build_period_markdown_document(
+        category_path_names=path_names,
+        period_type=period_type,
+        period_label=period_label,
+        projects=projects,
+    )
     snapshot_json, source_sha256 = build_period_source_snapshot(
         category_path_names=path_names,
         period_type=period_type,
@@ -539,8 +533,9 @@ def rebuild_period_word(
         relative_path=rel,
         word_filename=filename,
         project_count=len(projects),
-        file_content=file_content,
-        file_sha256=_sha256(file_content),
+        md_content=md_content,
+        file_format="md",
+        file_sha256=_sha256(md_content.encode("utf-8")),
         source_sha256=source_sha256,
         source_snapshot_json=snapshot_json,
         change_reason=change_reason,
@@ -549,10 +544,10 @@ def rebuild_period_word(
     version = saved["version"]
     if saved["version_created"]:
         backup_database_if_due()
-    # 若数据源没有变化，使用数据库中既有版本字节，避免无意义的二进制漂移。
-    stored_content = bytes(version["file_content"])
+    # 若数据源没有变化，使用数据库中既有版本内容，避免无意义的文本漂移。
+    stored_content = version.get("md_content") or ""
     try:
-        write_docx_bytes_atomic(stored_content, output)
+        write_file_atomic(stored_content.encode("utf-8"), output)
         db.mark_period_file_sync(period_file["id"], "synced")
     except Exception as exc:
         db.mark_period_file_sync(period_file["id"], "error", str(exc))
@@ -578,6 +573,17 @@ def _archive_local_period_file(
 ) -> dict:
     """把旧系统文件或检测到的本地手工改动收录为新的数据库版本。"""
     content = file_path.read_bytes()
+    # 按本地文件类型决定入库格式：.md 记为 Markdown 文本；其余（含 .docx）
+    # 记为 docx BLOB 备份（保留 file_content 以便回滚）。
+    ext = (file_path.suffix or "").lower()
+    if ext == ".md":
+        md_content = content.decode("utf-8", errors="replace")
+        file_content = None
+        file_format = "md"
+    else:
+        md_content = ""
+        file_content = content
+        file_format = "docx"
     category_id = int(period_file["category_id"])
     projects = db.list_projects_for_period(
         category_id,
@@ -611,7 +617,9 @@ def _archive_local_period_file(
         relative_path=period_file["relative_path"],
         word_filename=period_file["word_filename"],
         project_count=len(projects),
-        file_content=content,
+        md_content=md_content,
+        file_content=file_content,
+        file_format=file_format,
         file_sha256=file_sha256,
         source_sha256=source_sha256,
         source_snapshot_json=snapshot_json,
@@ -641,7 +649,7 @@ def ensure_period_file_local(period_file: dict) -> tuple[dict, Path]:
                 change_reason="升级时收录现有本地文件",
             )
             return period_file, file_path
-        rebuilt = rebuild_period_word(
+        rebuilt = rebuild_period_markdown(
             int(period_file["category_id"]),
             period_file["period_type"],
             period_file["period_label"],
@@ -651,23 +659,29 @@ def ensure_period_file_local(period_file: dict) -> tuple[dict, Path]:
             raise HTTPException(404, "周期文件不存在")
         return rebuilt, _period_file_path(rebuilt)
 
-    current_content = bytes(current["file_content"])
+    md_content = current.get("md_content")
+    if md_content:
+        # Markdown 主流：文本编码为字节写入本地 .md。
+        current_bytes = md_content.encode("utf-8")
+    else:
+        # 历史 docx 版本（file_content BLOB 仍存在）回退写原始 BLOB。
+        current_bytes = bytes(current["file_content"])
     if file_path.exists():
         local_hash = _sha256(file_path.read_bytes())
         if local_hash == current["file_sha256"]:
             db.mark_period_file_sync(int(period_file["id"]), "synced")
             return period_file, file_path
         if period_file.get("local_sync_status") == "synced":
-            # 已同步后内容再次变化，视为用户在 Word/WPS 中手工修改。
+            # 已同步后内容再次变化，视为用户在编辑器中手工修改。
             period_file = _archive_local_period_file(
                 period_file,
                 file_path,
-                change_reason="检测到本地 Word 手工修改",
+                change_reason="检测到本地手工修改",
             )
             return period_file, file_path
 
     try:
-        write_docx_bytes_atomic(current_content, file_path)
+        write_file_atomic(current_bytes, file_path)
         db.mark_period_file_sync(int(period_file["id"]), "synced")
     except Exception as exc:
         db.mark_period_file_sync(int(period_file["id"]), "error", str(exc))
@@ -686,7 +700,7 @@ def rebuild_project_periods(project: dict, modes: Optional[list[str]] = None) ->
     ]
     for ptype, label in mapping:
         if ptype in modes and label:
-            pf = rebuild_period_word(project["category_id"], ptype, label)
+            pf = rebuild_period_markdown(project["category_id"], ptype, label)
             if pf:
                 results.append(pf)
     return results
@@ -1282,11 +1296,12 @@ async def save_project(
     """
     正式保存项目：
     - 项目归属叶子分类
-    - 按勾选的周/月/季，把该分类本周期所有项目写入同一 Word
-    - Word 被占用时返回明确错误，且不创建重复项目
+    - 按勾选的周/月/季，把该分类本周期所有项目合并为同一 Markdown 周期文档
+    - 周期文档被占用时返回明确错误，且不创建重复项目
     """
     content = (content or "").strip()
-    plain_content = html_to_plain_text(content).strip()
+    fmt = sniff_content_format(content)
+    plain_content = get_plain_text(content, fmt).strip()
     if not plain_content:
         raise HTTPException(400, "项目内容不能为空")
 
@@ -1355,6 +1370,7 @@ async def save_project(
             month_label=month_label,
             quarter_label=quarter_label,
             status="saved",
+            content_format=fmt,
             clear_week="week" not in modes,
             clear_month="month" not in modes,
             clear_quarter="quarter" not in modes,
@@ -1370,6 +1386,7 @@ async def save_project(
             month_label=month_label,
             quarter_label=quarter_label,
             status="saved",
+            content_format=fmt,
         )
 
     if not project:
@@ -1408,12 +1425,12 @@ async def save_project(
         )
         attachment_records.append(rec)
 
-    # 重建 Word；若中途锁定则给出明确错误（precheck 已挡主路径）
+    # 重建 Markdown 周期文档；若中途锁定则给出明确错误（precheck 已挡主路径）
     period_files = []
     try:
         rebuild_set = {(cid, ptype, lab) for cid, ptype, lab, _ in targets}
         for cid, ptype, lab in sorted(rebuild_set):
-            pf = rebuild_period_word(
+            pf = rebuild_period_markdown(
                 cid,
                 ptype,
                 lab,
@@ -1422,7 +1439,7 @@ async def save_project(
             if pf:
                 period_files.append(pf)
     except (WordFileLockedError, WordFileWriteError, PermissionError, OSError) as e:
-        # Word 写失败：项目数据已在库中（可继续编辑），但明确告知未写入 Word
+        # 周期文档写失败：项目数据已在库中（可继续编辑），但明确告知未写入周期文档
         # 对新建场景：保持 project_id 返回给前端，避免用户再次点保存时再开新项目
         raise friendly_word_http_error(e)
 
@@ -1439,11 +1456,12 @@ async def save_project(
 @app.post("/api/projects/autosave")
 def autosave_project(body: ProjectDraftSave):
     """
-    定时自动保存草稿（不写入 Word）。
+    定时自动保存草稿（不写入周期文档）。
     避免长时间粘贴编辑时内容丢失。
     """
     content = (body.content or "").strip()
-    plain_content = html_to_plain_text(content).strip()
+    fmt = sniff_content_format(content)
+    plain_content = get_plain_text(content, fmt).strip()
     if not plain_content and not (body.title or "").strip():
         return {"ok": False, "skipped": True, "reason": "empty"}
 
@@ -1486,6 +1504,7 @@ def autosave_project(body: ProjectDraftSave):
                 content_preview=preview,
                 time_modes=modes,
                 status="draft",
+                content_format=fmt,
             )
             return {"ok": True, "project": project, "mode": "update"}
 
@@ -1499,6 +1518,7 @@ def autosave_project(body: ProjectDraftSave):
         month_label=None,
         quarter_label=None,
         status="draft",
+        content_format=fmt,
     )
     return {"ok": True, "project": project, "mode": "create"}
 
@@ -1537,10 +1557,10 @@ def delete_project(project_id: int):
 
     db.delete_project(project_id)
 
-    # 重建剩余项目的周期 Word
+    # 重建剩余项目的 Markdown 周期文档
     period_files = []
     for cid, ptype, lab in rebuild_set:
-        pf = rebuild_period_word(
+        pf = rebuild_period_markdown(
             cid,
             ptype,
             lab,
@@ -1620,7 +1640,7 @@ def open_period_file(
     pf = db.get_period_file(category_id, period_type, period_label)
     if not pf:
         # 尝试重建
-        pf = rebuild_period_word(
+        pf = rebuild_period_markdown(
             category_id,
             period_type,
             period_label,
@@ -1654,7 +1674,7 @@ def download_period_file(
 ):
     pf = db.get_period_file(category_id, period_type, period_label)
     if not pf:
-        pf = rebuild_period_word(
+        pf = rebuild_period_markdown(
             category_id,
             period_type,
             period_label,
@@ -1669,10 +1689,16 @@ def download_period_file(
     if not fp.exists():
         raise HTTPException(404, f"文件不存在：{fp}")
     filename = quote(fp.name)
+    # 媒体类型按后缀：.md 走 text/markdown，历史 .docx 仍按原类型（过渡期可读）。
+    media_type = (
+        "text/markdown; charset=utf-8"
+        if fp.suffix.lower() == ".md"
+        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
     return FileResponse(
         path=str(fp),
         filename=fp.name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type=media_type,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
 
@@ -1698,10 +1724,22 @@ def list_period_file_versions(period_file_id: int):
 def download_period_file_version(version_id: int):
     version = db.get_period_file_version(version_id)
     if not version:
-        raise HTTPException(404, "Word 历史版本不存在")
+        raise HTTPException(404, "历史版本不存在")
     stem = Path(version["word_filename"]).stem
-    filename_raw = f"{stem}_V{version['version_no']}.docx"
-    filename = quote(filename_raw)
+    fmt = (version.get("file_format") or "docx").lower()
+    # 主流 md：优先返回 Markdown 文本。
+    if fmt == "md" or not version.get("file_content"):
+        md_content = version.get("md_content") or ""
+        filename = quote(f"{stem}_V{version['version_no']}.md")
+        return Response(
+            content=md_content.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"
+            },
+        )
+    # 过渡期未迁移的 docx：仍返回 BLOB。
+    filename = quote(f"{stem}_V{version['version_no']}.docx")
     return Response(
         content=bytes(version["file_content"]),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1713,18 +1751,22 @@ def download_period_file_version(version_id: int):
 def restore_period_file_version(version_id: int):
     source = db.get_period_file_version(version_id)
     if not source:
-        raise HTTPException(404, "Word 历史版本不存在")
+        raise HTTPException(404, "历史版本不存在")
     period_file = db.get_period_file_by_id(int(source["period_file_id"]))
     if not period_file:
         raise HTTPException(404, "周期文件不存在")
     output = _period_file_path(period_file)
     try:
-        assert_word_writable(output)
         restored = db.restore_period_file_version(version_id)
         if not restored:
-            raise HTTPException(404, "Word 历史版本不存在")
+            raise HTTPException(404, "历史版本不存在")
         backup_database_if_due()
-        write_docx_bytes_atomic(bytes(restored["file_content"]), output)
+        # 复制源版本的 Markdown 文本（或 docx BLOB）为新当前版本并落盘。
+        md_content = restored.get("md_content")
+        if md_content is not None:
+            write_file_atomic(md_content.encode("utf-8"), output)
+        else:
+            write_file_atomic(bytes(restored["file_content"]), output)
         db.mark_period_file_sync(int(source["period_file_id"]), "synced")
     except HTTPException:
         raise

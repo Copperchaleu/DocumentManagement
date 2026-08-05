@@ -1,0 +1,56 @@
+%% B.1 周期文档 Markdown 组装 + 落盘（T06）
+sequenceDiagram
+    participant U as 用户保存/删除项目
+    participant API as rebuild_period_markdown
+    participant MS as MarkdownService.build_period_markdown_document
+    participant MU as MarkdownUtils
+    participant DB as Database
+    participant FS as data/documents/*.md
+
+    U->>API: 触发周期重建
+    API->>MS: projects(含 content_format)
+    loop 每个 project
+        MS->>MU: content_format=='html' ? html_to_md(content) : content
+        MU-->>MS: md
+    end
+    MS-->>API: 合并 Markdown 文档(str)
+    API->>DB: save_period_file_version(md_content, file_format='md')
+    API->>FS: write_file_atomic(md.encode, *.md)
+    API-->>U: period_file(含 period_files)
+
+%% B.2 历史 docx→md 迁移（T08）
+sequenceDiagram
+    actor Ops as 运维
+    participant S as migrate_docx_versions_to_md.py
+    participant DB as Database
+    participant MU as MarkdownUtils.docx_bytes_to_md
+    participant R as 影响报告
+
+    Ops->>DB: backup_to()  // 全量备份（含 docx BLOB）
+    S->>DB: SELECT id,file_content WHERE file_format='docx'
+    loop 每条 docx 版本（按 version_id 定位，幂等）
+        DB-->>S: version(docx BLOB)
+        S->>MU: docx_bytes_to_md(blob)
+        MU-->>S: md, loss_flags
+        S->>DB: UPDATE md_content=md, file_format='md'（保留 file_content BLOB 作备份）
+    end
+    S->>R: 汇总 historical_docx_loss（图片/表格/批注/样式）
+    R-->>Ops: migration_impact_report.json（含 historical_docx_loss）
+
+%% B.3 下载/恢复端点服务 .md（T07）
+sequenceDiagram
+    participant U as 用户
+    participant API as download/restore 端点
+    participant DB as Database
+    participant FS as data/documents/*.md
+
+    U->>API: GET /period-file-versions/{id}/download
+    API->>DB: get_period_file_version(id)
+    alt md_content 存在
+        DB-->>API: md_content, file_format='md'
+        API-->>U: Response(text/markdown, *.md)
+    else 未迁移 docx（过渡期）
+        DB-->>API: file_content BLOB, file_format='docx'
+        API-->>U: Response(docx BLOB, *.docx)
+    end
+    Note over U,API: restore 端点：复制 md_content 为新当前版本 + write_file_atomic(*.md)

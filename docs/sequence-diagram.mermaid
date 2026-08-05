@@ -1,67 +1,77 @@
-%% 时序图 1：进入工作面板 → 渲染三 Tab → 切换看板 Tab → 调 stats 接口 → 后端聚合 → 渲染指标卡+SVG
+%% 4.1 迁移 + 校验流程（T02）
 sequenceDiagram
-    autonumber
-    actor User
-    participant WBV as WorkbenchView(外壳)
-    participant TB as TaskBoard(区域一)
-    participant DP as DashboardPanel(区域二)
-    participant API as StatsApi(前端)
-    participant BE as FastAPI(后端)
+    actor Ops as 运维
+    participant S as migrate_html_to_md.py
     participant DB as Database
+    participant MU as MarkdownUtils
+    participant R as 报告
 
-    User->>WBV: 进入 /workbench
-    WBV->>TB: 挂载 onMounted → loadTasks()(localStorage)
-    WBV->>DP: 挂载(默认未激活，待 tab-change 再拉取)
-    WBV->>NotesPanel: 挂载(loadNotes from localStorage)
-    Note over WBV: el-tabs 默认 v-show 常驻挂载，三区域状态均保留
+    Ops->>DB: backup_to()  // P0-1 全量在线备份
+    S->>DB: SELECT id,content WHERE content_format='html'
+    loop 每条 html 项目（按 project_id 定位，幂等）
+        DB-->>S: project(content_html)
+        S->>MU: html_to_md(content_html)
+        MU-->>S: md
+        S->>MU: validate_roundtrip(content_html, md)
+        MU-->>S: diff_count
+        S->>DB: UPDATE content=md, content_format='md', content_html_backup=content_html, content_preview=md_to_plain_text(md)[:200]
+    end
+    S->>R: 汇总 diff_count / 样式损失条目
+    R-->>Ops: migration_impact_report.json + validation.json
 
-    User->>WBV: 点击「数据看板」Tab
-    WBV->>DP: tab-change 触发 refresh()
-    DP->>API: getProjectStatsSummary()
-    API->>BE: GET /api/stats/projects-summary
-    BE->>DB: count_saved_projects_period()
-    DB-->>BE: {today, month, quarter}
-    BE-->>API: ProjectStatsSummary
-    DP->>API: getProjectStatsTrend('day')
-    API->>BE: GET /api/stats/projects-trend?range=day
-    BE->>DB: project_daily_counts(14)
-    DB-->>BE: [(label,count)...]
-    BE-->>API: ProjectStatsTrend
-    DP->>DP: 渲染 3 张指标卡(today/month/quarter)
-    DP->>TrendChart: 传入 labels/values 渲染 SVG
-    TrendChart-->>DP: 折线/柱状 SVG
-    DP-->>User: 看板展示(指标卡 + 趋势图)
-
-    User->>DP: 切换 range=month / quarter
-    DP->>API: getProjectStatsTrend(range)
-    API->>BE: GET /api/stats/projects-trend?range=month
-    BE->>DB: project_monthly_counts(6) / project_quarterly_counts(8)
-    DB-->>BE: [(label,count)...]
-    BE-->>API: ProjectStatsTrend
-    DP->>TrendChart: 重绘 SVG
-
-%% 时序图 2：随心记输入 → 存 localStorage → 列表刷新
+%% 4.2 新内容保存（MD 路径，T01 + T04）
 sequenceDiagram
-    autonumber
-    actor User
-    participant NP as NotesPanel(区域三)
-    participant LS as localStorage
+    participant U as 用户
+    participant CV as ComposeView(md-editor-v3)
+    participant API as MainAPI.save_project
+    participant MU as MarkdownUtils
+    participant DB as Database
+    participant WS as WordService
+    participant PF as period_file_versions(BLOB)
 
-    User->>NP: 输入内容并回车/点击「保存」
-    NP->>NP: 构造 NoteItem{id, content, createdAt, updatedAt}
-    NP->>LS: setItem('document-management-workbench-notes-v1', JSON)
-    NP->>NP: notes.value = 读取/追加新项(置顶)
-    NP-->>User: 列表刷新(新增项可见、可编辑/删除)
+    U->>CV: 编辑 Markdown 并点击保存
+    CV->>API: POST content=~<MD 字符串>~
+    API->>MU: sniff_content_format(MD) → 'md'
+    API->>MU: get_plain_text(MD,'md') → 判空/标题/预览
+    API->>DB: create/update(content, content_format='md', content_preview)
+    API->>WS: rebuild_period_word(...)
+    WS->>MU: md_to_html(MD) → HTML
+    WS->>WS: _add_rich_content(HTML) 复用 python-docx 写出
+    WS->>PF: 存新版 docx BLOB（source_sha256 变化才新建版本）
+    API-->>CV: project(含 period_files)
 
-%% 时序图 3：待办初始化(零回归，localStorage 还原)
+%% 4.3 Word 重生成分发（md vs html，T03）
 sequenceDiagram
-    autonumber
-    participant WBV as WorkbenchView
-    participant TB as TaskBoard
-    participant LS as localStorage
+    participant R as rebuild_period_word
+    participant WS as WordService.build_period_word_document
+    participant MU as MarkdownUtils
+    participant P as _add_rich_content (python-docx)
 
-    WBV->>TB: onMounted
-    TB->>LS: getItem('document-management-workbench-tasks-v1')
-    LS-->>TB: JSON array
-    TB->>TB: 兼容旧百分比进度→completed 映射
-    TB-->>WBV: 待办列表/输入完整还原(切换 Tab 不丢)
+    R->>WS: projects(每个含 content_format)
+    loop 每个 project
+        WS->>WS: fmt = project['content_format']
+        alt fmt == 'md'
+            WS->>MU: md_to_html(content)
+            MU-->>WS: html
+            WS->>P: _add_rich_content(html)
+        else fmt == 'html'
+            WS->>P: _add_rich_content(content)  // 原路径不变
+        end
+        Note over P: 标题映射 level=min(4,max(2,int(h)+1)) 不变
+    end
+
+%% 4.4 回滚流程（T02 产出 + T05 演练）
+sequenceDiagram
+    actor Ops as 运维
+    participant RB as rollback_html_from_md.py
+    participant DB as Database
+    participant WS as WordService
+
+    Ops->>RB: 运行回滚（可选 --project-id）
+    RB->>DB: SELECT id WHERE content_format='md' AND content_html_backup IS NOT NULL
+    loop 每条
+        DB-->>RB: project(backup)
+        RB->>DB: UPDATE content=content_html_backup, content_format='html', content_html_backup=NULL
+    end
+    RB->>WS: 受影响周期 rebuild_period_word()（恢复到 HTML 真源）
+    RB-->>Ops: 回滚计数报告

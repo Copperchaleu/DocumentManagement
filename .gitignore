@@ -11,3 +11,9 @@ Thumbs.db
 web/node_modules/
 web/dist/
 frontend/dist/
+
+# 迁移/验证脚本生成的报告 JSON（产物，非源码）
+docs/validation.json
+docs/migration_impact_report.json
+docs/historical_docx_loss.json
+docs/docx_migration_summary.json

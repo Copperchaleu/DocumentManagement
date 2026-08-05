@@ -1,25 +1,28 @@
-"""将项目信息合并写入 Word 文档。"""
+"""周期文档以 Markdown 组装并落盘（彻底移除 Word/.docx）。
+
+职责：
+- ``build_period_markdown_document``：合并同周期项目的 Markdown 正文，
+  输出一份完整的 Markdown 周期文档（标题 / 项目章节 / 元信息 / 分隔）。
+- ``write_file_atomic``：原子写入任意字节（用于本地 ``.md`` 副本）。
+- ``html_to_plain_text``：富文本/HTML 取纯文本（保留给 ``markdown_utils``
+  的 ``md_to_plain_text`` 与往返校验复用，不依赖 python-docx）。
+
+> 历史 ``period_file_versions`` 的 ``.docx`` BLOB 不再在此写出，已由
+> ``scripts/migrate_docx_versions_to_md.py``（mammoth + markdownify）统一迁为
+> Markdown 文本列 ``md_content``；``file_content`` BLOB 仅作回滚备份保留。
+"""
 
 from __future__ import annotations
 
 import os
 import re
 from html.parser import HTMLParser
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
 
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.opc.constants import RELATIONSHIP_TYPE as RT
-from docx.shared import Pt, RGBColor
-from docx.text.run import Run
-
 
 class WordFileLockedError(Exception):
-    """目标 Word 正在被占用（如被 Microsoft Word 打开）导致无法写入。"""
+    """目标文件正在被其它程序占用（如被 Word/WPS/编辑器打开）导致无法写入。"""
 
     def __init__(self, path: Path | str, cause: Exception | None = None) -> None:
         self.path = Path(path)
@@ -28,7 +31,7 @@ class WordFileLockedError(Exception):
 
 
 class WordFileWriteError(Exception):
-    """Word 写入失败（非占用类错误）。"""
+    """文件写入失败（非占用类错误）。"""
 
     def __init__(self, path: Path | str, cause: Exception | None = None) -> None:
         self.path = Path(path)
@@ -36,73 +39,10 @@ class WordFileWriteError(Exception):
         super().__init__(str(self.path))
 
 
-def is_file_locked(path: Path) -> bool:
-    """
-    检测文件是否被占用。
-    Word/WPS 打开 docx 时，通常会拒绝覆盖/重命名（PermissionError / WinError 32）。
-    """
-    path = Path(path)
-    if not path.exists():
-        return False
-
-    # 1) 尝试以读写方式打开
-    try:
-        with open(path, "r+b"):
-            pass
-    except PermissionError:
-        return True
-    except OSError as e:
-        if getattr(e, "winerror", None) == 32 or e.errno in (13, 11):
-            return True
-
-    # 2) 重命名探测：被 Word 占用时往往无法改名
-    probe = path.with_name(path.name + ".__lockprobe__")
-    try:
-        if probe.exists():
-            try:
-                probe.unlink()
-            except Exception:
-                pass
-        path.rename(probe)
-        probe.rename(path)
-        return False
-    except PermissionError:
-        return True
-    except OSError as e:
-        if getattr(e, "winerror", None) == 32 or e.errno in (13, 11):
-            return True
-        # 其他异常保守视为可能占用，避免误覆盖
-        return True
-    finally:
-        # 若 probe 残留且原文件不在，尝试回滚
-        try:
-            if probe.exists() and not path.exists():
-                probe.rename(path)
-        except Exception:
-            pass
-
-
-def assert_word_writable(path: Path) -> None:
-    """写入前检查；若被占用则抛 WordFileLockedError。"""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and is_file_locked(path):
-        raise WordFileLockedError(path)
-
-
-def document_to_docx_bytes(doc: Document) -> bytes:
-    """把 python-docx 文档序列化为可写入数据库的完整 docx 字节。"""
-    buffer = BytesIO()
-    doc.save(buffer)
-    return buffer.getvalue()
-
-
-def write_docx_bytes_atomic(file_content: bytes, output_path: Path) -> Path:
-    """将 docx 字节先写临时文件再替换；占用时给出明确异常。"""
+def write_file_atomic(content: bytes, output_path: Path) -> Path:
+    """将任意字节先写临时文件再原子替换；占用/失败时给出明确异常。"""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    assert_word_writable(output_path)
-
     tmp_path = output_path.with_name(output_path.name + ".writing.tmp")
     try:
         if tmp_path.exists():
@@ -110,7 +50,7 @@ def write_docx_bytes_atomic(file_content: bytes, output_path: Path) -> Path:
                 tmp_path.unlink()
             except Exception:
                 pass
-        tmp_path.write_bytes(file_content)
+        tmp_path.write_bytes(content)
         try:
             os.replace(str(tmp_path), str(output_path))
         except PermissionError as e:
@@ -136,86 +76,9 @@ def write_docx_bytes_atomic(file_content: bytes, output_path: Path) -> Path:
     return output_path
 
 
-def _atomic_save_docx(doc: Document, output_path: Path) -> Path:
-    """兼容旧调用：先序列化文档，再原子写入。"""
-    try:
-        file_content = document_to_docx_bytes(doc)
-    except Exception as e:
-        raise WordFileWriteError(output_path, e) from e
-    return write_docx_bytes_atomic(file_content, output_path)
-
-
-# 含汉字即视为 CJK 字体的辅助正则（用于决定 eastAsia 字体）
-_CJK_FONT_RE = re.compile(r"[一-鿿]")
-# 已知的中日韩字体集合，作为正则的补充判断
-_CJK_FONT_NAMES = {
-    "Microsoft YaHei",
-    "微软雅黑",
-    "SimSun",
-    "宋体",
-    "SimHei",
-    "黑体",
-    "KaiTi",
-    "楷体",
-    "FangSong",
-    "仿宋",
-    "STSong",
-    "STKaiti",
-    "STHeiti",
-    "STFangsong",
-    "NSimSun",
-    "新宋体",
-    "Microsoft JhengHei",
-    "微軟正黑體",
-}
-
-
-def _is_cjk_font(name: str | None) -> bool:
-    """判断字体名是否为中日韩字体（保证中文在 Word 中可见）。"""
-    if not name:
-        return False
-    if _CJK_FONT_RE.search(name):
-        return True
-    return name in _CJK_FONT_NAMES
-
-
-def _set_run_font(
-    run,
-    size_pt: float | None = None,
-    color: RGBColor | None = None,
-    font_name: str | None = None,
-) -> None:
-    # 先设置 run.font.name，确保 rPr/rFonts 节点存在，避免 AttributeError
-    if font_name:
-        run.font.name = font_name
-        rpr = run._element.get_or_add_rPr()
-        rfonts = rpr.find(qn("w:rFonts"))
-        if rfonts is None:
-            rfonts = OxmlElement("w:rFonts")
-            rpr.append(rfonts)
-        rfonts.set(qn("w:ascii"), font_name)
-        rfonts.set(qn("w:hAnsi"), font_name)
-        # 中日韩字体直接设为字体本身，否则中文回退到微软雅黑
-        east_asia = font_name if _is_cjk_font(font_name) else "微软雅黑"
-        rfonts.set(qn("w:eastAsia"), east_asia)
-    else:
-        run.font.name = "Microsoft YaHei"
-        run._element.get_or_add_rPr()
-        run._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
-    if size_pt is not None:
-        run.font.size = Pt(size_pt)
-    if color is not None:
-        run.font.color.rgb = color
-
-
-def _setup_document_style(doc: Document) -> None:
-    style = doc.styles["Normal"]
-    style.font.name = "Microsoft YaHei"
-    style.font.size = Pt(11)
-    style._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
-    style.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
-    style.paragraph_format.space_after = Pt(6)
-
+# ---------------------------------------------------------------------------
+# 富文本 → 纯文本（保留给 markdown_utils.md_to_plain_text / 往返校验复用）
+# ---------------------------------------------------------------------------
 
 class _RichTextParser(HTMLParser):
     """将受控 wangEditor HTML 解析为段落块和带格式的文字片段。"""
@@ -329,14 +192,12 @@ class _RichTextParser(HTMLParser):
         color = self._normalize_color(css.get("color") or attrs.get("color"))
         if color:
             style["color"] = color
-        # 字体：wangEditor 通过 <span style="font-family: 微软雅黑;"> 施加
         font_family = css.get("font-family")
         if font_family:
             font_family = font_family.strip().strip('"').strip("'").strip()
             if "," in font_family:
                 font_family = font_family.split(",", 1)[0].strip().strip('"').strip("'").strip()
             style["font_family"] = font_family
-        # 字号：wangEditor 通过 <span style="font-size: 16px;"> 施加
         font_size = css.get("font-size")
         if font_size:
             match = re.search(r"(\d+(?:\.\d+)?)\s*(px|pt|em|rem|%)?", font_size, re.IGNORECASE)
@@ -347,7 +208,6 @@ class _RichTextParser(HTMLParser):
                     style["font_size"] = round(value * 0.75, 2)
                 elif unit == "pt":
                     style["font_size"] = value
-                # 其他单位（em/rem/% 等）无法可靠换算，忽略
         if tag == "a" and attrs.get("href"):
             style["href"] = attrs["href"].strip()
         self._style_stack.append(style)
@@ -401,215 +261,80 @@ def html_to_plain_text(content: str) -> str:
     return "\n".join("".join(run["text"] for run in block["runs"]).strip() for block in blocks)
 
 
-def _apply_run_style(run: Run, spec: dict[str, Any]) -> None:
-    _set_run_font(run, size_pt=spec.get("font_size"), font_name=spec.get("font_family"))
-    run.bold = bool(spec.get("bold"))
-    run.italic = bool(spec.get("italic"))
-    run.underline = bool(spec.get("underline"))
-    run.font.strike = bool(spec.get("strike"))
-    color = spec.get("color")
-    if color and re.fullmatch(r"[0-9A-F]{6}", color):
-        run.font.color.rgb = RGBColor.from_string(color)
+# ---------------------------------------------------------------------------
+# 周期文档 Markdown 组装
+# ---------------------------------------------------------------------------
+
+_PERIOD_CN = {"week": "周", "month": "月", "quarter": "季度"}
 
 
-def _set_run_text(run: Run, text: str) -> None:
-    parts = text.split("\n")
-    for index, part in enumerate(parts):
-        if index:
-            run.add_break()
-        if part:
-            run.add_text(part)
+def _project_body_to_markdown(project: dict[str, Any]) -> str:
+    """项目正文转 Markdown：``md`` 原样拼接；``html`` 经 markdownify 转换。
+
+    与 ``projects.content`` 迁移共用同一 HTML→MD 管线（``markdown_utils.html_to_md``），
+    保证单项目正文与全量迁移口径一致、保真。
+    """
+    from .markdown_utils import html_to_md
+
+    content = project.get("content") or ""
+    fmt = (project.get("content_format") or "html").lower()
+    if fmt == "md":
+        return content
+    return html_to_md(content)
 
 
-def _add_hyperlink(paragraph, text: str, url: str, spec: dict[str, Any]) -> Run:
-    relation_id = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
-    hyperlink = OxmlElement("w:hyperlink")
-    hyperlink.set(qn("r:id"), relation_id)
-    run_element = OxmlElement("w:r")
-    hyperlink.append(run_element)
-    paragraph._p.append(hyperlink)
-    run = Run(run_element, paragraph)
-    _set_run_text(run, text)
-    link_spec = dict(spec)
-    link_spec["color"] = link_spec.get("color") or "0563C1"
-    link_spec["underline"] = True
-    _apply_run_style(run, link_spec)
-    return run
-
-
-def _paragraph_alignment(value: str):
-    return {
-        "center": WD_ALIGN_PARAGRAPH.CENTER,
-        "right": WD_ALIGN_PARAGRAPH.RIGHT,
-        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
-    }.get(value, WD_ALIGN_PARAGRAPH.LEFT)
-
-
-def _add_block_runs(paragraph, runs: list[dict[str, Any]]) -> None:
-    for spec in runs:
-        text = spec.get("text") or ""
-        if not text:
-            continue
-        href = (spec.get("href") or "").strip()
-        if href:
-            _add_hyperlink(paragraph, text, href, spec)
-        else:
-            run = paragraph.add_run()
-            _set_run_text(run, text)
-            _apply_run_style(run, spec)
-
-
-def _add_rich_content(doc: Document, content: str) -> None:
-    raw = content or ""
-    if not re.search(r"<\s*[a-zA-Z][^>]*>", raw):
-        _add_paragraphs(doc, raw)
-        return
-
-    for block in _parse_rich_text(raw):
-        block_type = block["type"]
-        if block_type in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-            level = min(4, max(2, int(block_type[1]) + 1))
-            paragraph = doc.add_heading(level=level)
-        elif block_type == "list-item":
-            base = "List Number" if block.get("list_type") == "ol" else "List Bullet"
-            depth = min(2, int(block.get("list_depth") or 0))
-            style = base if depth == 0 else f"{base} {depth + 1}"
-            try:
-                paragraph = doc.add_paragraph(style=style)
-            except KeyError:
-                paragraph = doc.add_paragraph(style=base)
-        else:
-            paragraph = doc.add_paragraph()
-
-        paragraph.alignment = _paragraph_alignment(block.get("align") or "left")
-        if block_type == "blockquote":
-            paragraph.paragraph_format.left_indent = Pt(18)
-            paragraph.paragraph_format.right_indent = Pt(8)
-        _add_block_runs(paragraph, block["runs"])
-
-
-def _add_paragraphs(doc: Document, content: str) -> None:
-    lines = (content or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    buffer: list[str] = []
-
-    def flush() -> None:
-        nonlocal buffer
-        text = "\n".join(buffer).strip("\n")
-        if text.strip() == "" and buffer:
-            doc.add_paragraph("")
-        elif text:
-            p = doc.add_paragraph(text)
-            for run in p.runs:
-                _set_run_font(run)
-        buffer = []
-
-    for line in lines:
-        if line.strip() == "":
-            flush()
-            buffer = [""]
-            flush()
-        else:
-            buffer.append(line)
-    flush()
-
-
-def build_period_word_document(
+def build_period_markdown_document(
     category_path_names: Iterable[str],
     period_type: str,
     period_label: str,
     projects: list[dict[str, Any]],
-) -> bytes:
+) -> str:
+    """把同一分类 + 同一时间周期的所有项目合并为一份 Markdown 周期文档。
+
+    结构：文档 ``#`` 标题 → 元信息引用行 → 每个项目 ``## {序号}. {标题}``
+    （含创建/更新/附件元信息）→ 项目正文（原样拼接或 HTML 转换）→ ``---`` 分隔。
+    项目正文保真优先，默认不降级标题层级（与单项目内容往返一致）。
     """
-    把同一分类 + 同一时间周期的所有项目生成成 docx 字节。
-    返回值可先保存进 SQLite，再同步为本地最新文件。
-    """
-    period_cn = {"week": "周", "month": "月", "quarter": "季度"}.get(period_type, period_type)
+    period_cn = _PERIOD_CN.get(period_type, period_type)
     cat_path = " / ".join([n for n in category_path_names if n]) or "未分类"
-    title = f"{cat_path} · {period_cn}报 {period_label}"
 
-    doc = Document()
-    _setup_document_style(doc)
-
-    heading = doc.add_heading(title, level=1)
-    for run in heading.runs:
-        _set_run_font(run, color=RGBColor(0x1A, 0x1A, 0x2E))
-
-    meta = doc.add_paragraph(
-        f"分类：{cat_path}  |  周期：{period_cn} {period_label}  |  项目数：{len(projects)}"
+    lines: list[str] = []
+    lines.append(f"# {cat_path} · {period_cn}报 {period_label}")
+    lines.append("")
+    lines.append(
+        f"> 分类：{cat_path}  |  周期：{period_cn} {period_label}  |  项目数：{len(projects)}"
     )
-    for run in meta.runs:
-        _set_run_font(run, size_pt=9, color=RGBColor(0x66, 0x66, 0x66))
-
-    doc.add_paragraph("")
+    lines.append("")
 
     if not projects:
-        p = doc.add_paragraph("（本周期暂无项目）")
-        for run in p.runs:
-            _set_run_font(run, color=RGBColor(0x88, 0x88, 0x88))
-    else:
-        for idx, project in enumerate(projects, start=1):
-            # 项目标题
-            h = doc.add_heading(f"{idx}. {project.get('title') or '未命名项目'}", level=2)
-            for run in h.runs:
-                _set_run_font(run)
+        lines.append("（本周期暂无项目）")
+        lines.append("")
+        return "\n".join(lines)
 
-            # 元信息
-            bits = []
-            if project.get("created_at"):
-                bits.append(f"创建：{project['created_at']}")
-            if project.get("updated_at"):
-                bits.append(f"更新：{project['updated_at']}")
-            atts = project.get("attachments") or []
-            if atts:
-                names = "、".join(a.get("original_name") or a.get("stored_name") or "" for a in atts)
-                bits.append(f"附件：{names}")
-            if bits:
-                info = doc.add_paragraph("  |  ".join(bits))
-                for run in info.runs:
-                    _set_run_font(run, size_pt=9, color=RGBColor(0x66, 0x66, 0x66))
+    for idx, project in enumerate(projects, start=1):
+        lines.append(f"## {idx}. {project.get('title') or '未命名项目'}")
+        lines.append("")
 
-            _add_rich_content(doc, project.get("content") or "")
-            doc.add_paragraph("")  # 项目之间留空
+        bits = []
+        if project.get("created_at"):
+            bits.append(f"**创建**：{project['created_at']}")
+        if project.get("updated_at"):
+            bits.append(f"**更新**：{project['updated_at']}")
+        atts = project.get("attachments") or []
+        if atts:
+            names = "、".join(
+                a.get("original_name") or a.get("stored_name") or "" for a in atts
+            )
+            bits.append(f"**附件**：{names}")
+        if bits:
+            lines.append("  ".join(bits))
+            lines.append("")
 
-    return document_to_docx_bytes(doc)
+        body = _project_body_to_markdown(project)
+        if body:
+            lines.append(body)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
 
-
-def create_period_word_document(
-    output_path: Path,
-    category_path_names: Iterable[str],
-    period_type: str,
-    period_label: str,
-    projects: list[dict[str, Any]],
-) -> Path:
-    """兼容旧接口：生成 docx 字节并写入本地文件。"""
-    file_content = build_period_word_document(
-        category_path_names=category_path_names,
-        period_type=period_type,
-        period_label=period_label,
-        projects=projects,
-    )
-    return write_docx_bytes_atomic(file_content, output_path)
-
-
-# 兼容旧接口（若被引用）
-def create_word_document(
-    title: str,
-    content: str,
-    output_path: Path,
-    category_name: str = "",
-    created_at: str = "",
-) -> Path:
-    project = {
-        "title": title,
-        "content": content,
-        "created_at": created_at,
-        "updated_at": created_at,
-        "attachments": [],
-    }
-    return create_period_word_document(
-        output_path=output_path,
-        category_path_names=[category_name] if category_name else [],
-        period_type="month",
-        period_label="legacy",
-        projects=[project],
-    )
+    return "\n".join(lines).rstrip() + "\n"

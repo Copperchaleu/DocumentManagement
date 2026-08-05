@@ -20,6 +20,7 @@ import {
   getCategoryValuePath,
   toCascaderOptions,
 } from '../utils/tree'
+import MarkdownPreview from '../components/MarkdownPreview.vue'
 
 const router = useRouter()
 const detailVisible = ref(false)
@@ -85,9 +86,9 @@ async function onOpenProjectPeriod(row, tag) {
       period_type: tag.periodType,
       period_label: tag.periodLabel,
     })
-    ElMessage.success(`已请求打开${tag.text}周期 Word`)
+    ElMessage.success(`已请求打开${tag.text}周期 Markdown`)
   } catch (e) {
-    toastError(e, '打开周期 Word 失败')
+    toastError(e, '打开周期 Markdown 失败')
   }
 }
 
@@ -116,7 +117,7 @@ async function onEdit(row) {
 
 async function onDelete(row) {
   try {
-    await ElMessageBox.confirm('确认删除该项目？将从周期合并 Word 中移除。', '删除确认', {
+    await ElMessageBox.confirm('确认删除该项目？将从周期合并 Markdown 文档中移除。', '删除确认', {
       type: 'warning',
     })
     await deleteProject(row.id)
@@ -208,7 +209,7 @@ async function onDelete(row) {
                 :key="t.text"
                 type="button"
                 class="period-link"
-                :title="`打开对应的${t.text}周期 Word`"
+                :title="`打开对应的${t.text}周期 Markdown`"
                 @click="onOpenProjectPeriod(row, t)"
               >
                 <el-tag size="small" :type="t.type || 'info'" effect="plain">
@@ -269,7 +270,11 @@ async function onDelete(row) {
             创建 {{ detail.created_at }} / 更新 {{ detail.updated_at }}
           </el-descriptions-item>
           <el-descriptions-item label="内容">
-            <pre class="detail-content">{{ detail.content }}</pre>
+            <MarkdownPreview
+              v-if="(detail.content_format || 'html') === 'md'"
+              :content="detail.content"
+            />
+            <pre v-else class="detail-content">{{ detail.content }}</pre>
           </el-descriptions-item>
           <el-descriptions-item label="附件">
             <div v-if="(detail.attachments || []).length" class="attach-list">

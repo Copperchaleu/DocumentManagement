@@ -161,15 +161,15 @@ async function onHistory(row) {
     await loadHistory(row.id)
     await refreshPeriodFiles()
   } catch (e) {
-    toastError(e, '读取 Word 历史版本失败')
+    toastError(e, '读取历史版本失败')
   }
 }
 
 async function onRestoreVersion(version) {
   try {
     await ElMessageBox.confirm(
-      `确认把 V${version.version_no} 恢复为当前 Word？本次恢复也会记录为一个新版本。`,
-      '恢复 Word 历史版本',
+      `确认把 V${version.version_no} 恢复为当前 Markdown？本次恢复也会记录为一个新版本。`,
+      '恢复历史版本',
       { type: 'warning' },
     )
     const data = await restorePeriodFileVersion(version.id)
@@ -180,7 +180,7 @@ async function onRestoreVersion(version) {
       refreshPeriodFiles(),
     ])
   } catch (e) {
-    if (e !== 'cancel') toastError(e, '恢复 Word 历史版本失败')
+    if (e !== 'cancel') toastError(e, '恢复历史版本失败')
   }
 }
 </script>
@@ -190,7 +190,7 @@ async function onRestoreVersion(version) {
     <div class="panel-head">
       <div class="title-area">
         <div class="title-row">
-          <h2>周期 Word 文件</h2>
+          <h2>周期 Markdown 文件</h2>
           <el-tag size="small" effect="plain" round type="info">
             {{ filteredPeriodFiles.length }} 个
           </el-tag>
@@ -331,14 +331,14 @@ async function onRestoreVersion(version) {
 
     <el-dialog
       v-model="historyVisible"
-      title="Word 历史版本"
+      title="历史版本"
       width="820px"
       destroy-on-close
       append-to-body
     >
       <div v-if="historyPeriodFile" class="history-summary">
         <div>{{ historyPeriodFile.word_filename }}</div>
-        <span>数据库保存全部版本，本地目录只保留当前版本；恢复 Word 不会回滚项目数据</span>
+        <span>数据库保存全部版本，本地目录只保留当前版本；恢复不会回滚项目数据</span>
       </div>
       <el-table
         :data="historyVersions"
