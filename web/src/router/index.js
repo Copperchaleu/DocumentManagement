@@ -29,7 +29,7 @@ const routes = [
         path: 'period',
         name: 'period',
         component: () => import('../views/PeriodView.vue'),
-        meta: { title: '周期文件' },
+        meta: { title: '汇总文件' },
       },
       {
         path: 'categories',

@@ -69,6 +69,76 @@ const filteredPeriodFiles = computed(() => {
   return list
 })
 
+// ===== 多选逻辑：用 Set 维护选中行的 id（每次变更都重新赋值新 Set，保证响应式）=====
+const selectedIds = ref(new Set())
+
+// 判断某行是否已选中
+function isSelected(row) {
+  return selectedIds.value.has(row.id)
+}
+
+// 切换单行选中状态
+function toggleRow(row) {
+  const next = new Set(selectedIds.value)
+  if (next.has(row.id)) {
+    next.delete(row.id)
+  } else {
+    next.add(row.id)
+  }
+  selectedIds.value = next
+}
+
+// 全选（全部文件，不局限于筛选结果）
+function selectAll() {
+  const next = new Set()
+  for (const r of appState.periodFiles || []) {
+    next.add(r.id)
+  }
+  selectedIds.value = next
+}
+
+// 筛选后的全选（仅当前筛选结果）
+function selectFilteredAll() {
+  const next = new Set(selectedIds.value)
+  for (const r of filteredPeriodFiles.value) {
+    next.add(r.id)
+  }
+  selectedIds.value = next
+}
+
+// 清空所有选中
+function clearSelection() {
+  selectedIds.value = new Set()
+}
+
+// 已选数量
+const selectedCount = computed(() => selectedIds.value.size)
+
+// 当前筛选结果是否全部选中（用于表头复选框状态）
+const allFilteredSelected = computed(
+  () =>
+    filteredPeriodFiles.value.length > 0 &&
+    filteredPeriodFiles.value.every((r) => selectedIds.value.has(r.id)),
+)
+
+// 表头复选框切换：勾选时筛选后全选，取消时移除筛选结果的选中
+function toggleFilteredAll(val) {
+  if (val) {
+    selectFilteredAll()
+  } else {
+    const next = new Set(selectedIds.value)
+    for (const r of filteredPeriodFiles.value) {
+      next.delete(r.id)
+    }
+    selectedIds.value = next
+  }
+}
+
+// 已选中的完整行（用于复制路径）
+const selectedRows = computed(() =>
+  (appState.periodFiles || []).filter((r) => selectedIds.value.has(r.id)),
+)
+
 // 根据所选日期反推其所属周/月/季度标签，与后端 path_utils 的 ISO 周规则一致
 function getPeriodLabelsForDate(value) {
   if (!value) return null
@@ -183,6 +253,39 @@ async function onRestoreVersion(version) {
     if (e !== 'cancel') toastError(e, '恢复历史版本失败')
   }
 }
+
+// 复制所选文件的绝对路径（每行一个 abs_path）
+async function onCopyPaths() {
+  const rows = selectedRows.value
+  if (!rows.length) {
+    ElMessage.warning('请先勾选要复制路径的文件')
+    return
+  }
+  const lines = rows.map((r) => r.abs_path || '').filter(Boolean)
+  if (!lines.length) {
+    ElMessage.warning('所选文件缺少绝对路径')
+    return
+  }
+  const text = lines.join('\n')
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // 兜底：旧浏览器/非安全上下文
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    ElMessage.success(`已复制 ${lines.length} 个文件的绝对路径`)
+  } catch (e) {
+    toastError(e, '复制失败')
+  }
+}
 </script>
 
 <template>
@@ -190,7 +293,6 @@ async function onRestoreVersion(version) {
     <div class="panel-head">
       <div class="title-area">
         <div class="title-row">
-          <h2>周期 Markdown 文件</h2>
           <el-tag size="small" effect="plain" round type="info">
             {{ filteredPeriodFiles.length }} 个
           </el-tag>
@@ -244,6 +346,14 @@ async function onRestoreVersion(version) {
         >
           清空筛选
         </el-button>
+
+        <el-divider direction="vertical" />
+        <el-button @click="selectAll">全选</el-button>
+        <el-button @click="selectFilteredAll">筛选后全选</el-button>
+        <el-button @click="clearSelection" :disabled="selectedCount === 0">清空所选</el-button>
+        <el-button type="primary" @click="onCopyPaths" :disabled="selectedCount === 0">
+          复制路径（{{ selectedCount }}）
+        </el-button>
       </div>
     </div>
 
@@ -255,8 +365,20 @@ async function onRestoreVersion(version) {
         stripe
         border
         table-layout="fixed"
-        empty-text="暂无周期文件"
+        empty-text="暂无汇总文件"
       >
+        <el-table-column label="选择" width="70" align="center">
+          <template #header>
+            <el-checkbox
+              :model-value="allFilteredSelected"
+              @change="toggleFilteredAll"
+              title="筛选后的全选"
+            />
+          </template>
+          <template #default="{ row }">
+            <el-checkbox :model-value="isSelected(row)" @change="() => toggleRow(row)" />
+          </template>
+        </el-table-column>
         <el-table-column label="分类" min-width="220">
           <template #default="{ row }">
             <span
