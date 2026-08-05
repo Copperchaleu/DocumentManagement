@@ -2,34 +2,68 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, EditPen, Notebook } from '@element-plus/icons-vue'
+import { getNotes, createNote, updateNote, deleteNote, migrateWorkbench } from '../api/workbench'
+import { toastError } from '../api/http'
 
-const STORAGE_KEY = 'document-management-workbench-notes-v1'
+// 仅用于一次性迁移探测 + 离线回退读取，不再作为主存储。
+const LEGACY_STORAGE_KEY = 'document-management-workbench-notes-v1'
 
 const notes = ref([])
 const draft = ref('')
 const editDialogVisible = ref(false)
 const editingId = ref(null)
 const editForm = reactive({ content: '' })
+const loading = ref(false)
 
 const sortedNotes = computed(() =>
   [...notes.value].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
 )
 
 function loadNotes() {
+  loading.value = true
+  getNotes()
+    .then((res) => {
+      notes.value = Array.isArray(res?.items) ? res.items : []
+      // 后端为空且本地存在旧数据：一次性迁移到后端，再重载。
+      if (notes.value.length === 0) {
+        const legacy = readLegacyNotes()
+        if (legacy.length > 0) {
+          return migrateWorkbench({ tasks: [], notes: legacy })
+            .then(() => getNotes())
+            .then((reload) => {
+              notes.value = Array.isArray(reload?.items) ? reload.items : []
+              clearLegacyNotes()
+            })
+            .catch((err) => {
+              notes.value = legacy
+              toastError(err, '迁移失败，已使用本地缓存')
+            })
+        }
+      }
+    })
+    .catch((err) => {
+      notes.value = readLegacyNotes()
+      toastError(err, '离线使用本地缓存')
+    })
+    .finally(() => {
+      loading.value = false
+    })
+}
+
+function readLegacyNotes() {
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
-    notes.value = Array.isArray(stored) ? stored : []
+    const stored = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || '[]')
+    return Array.isArray(stored) ? stored : []
   } catch {
-    notes.value = []
-    ElMessage.warning('随心记本地数据读取失败，已使用空列表')
+    return []
   }
 }
 
-function saveNotes() {
+function clearLegacyNotes() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes.value))
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
   } catch {
-    ElMessage.error('无法保存随心记，请检查浏览器存储设置')
+    /* 忽略清除失败，下次仍可按空库触发迁移重试 */
   }
 }
 
@@ -39,16 +73,29 @@ function addNote() {
     ElMessage.warning('写点什么再记一笔吧')
     return
   }
+  if (content.length > 500) {
+    ElMessage.warning('内容不超过 500 字')
+    return
+  }
+  loading.value = true
   const now = new Date().toISOString()
-  notes.value.unshift({
-    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+  createNote({
     content,
+    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     createdAt: now,
     updatedAt: now,
   })
-  saveNotes()
-  draft.value = ''
-  ElMessage.success('已记一笔')
+    .then((created) => {
+      notes.value.unshift(created)
+      draft.value = ''
+      ElMessage.success('已记一笔')
+    })
+    .catch((e) => {
+      toastError(e, '记录失败，请重试')
+    })
+    .finally(() => {
+      loading.value = false
+    })
 }
 
 function openEdit(note) {
@@ -63,18 +110,32 @@ async function submitEdit() {
     ElMessage.warning('内容不能为空')
     return
   }
-  const index = notes.value.findIndex((n) => n.id === editingId.value)
-  if (index >= 0) {
-    notes.value[index] = {
-      ...notes.value[index],
-      content,
-      updatedAt: new Date().toISOString(),
-    }
-    saveNotes()
+  if (content.length > 500) {
+    ElMessage.warning('内容不超过 500 字')
+    return
   }
-  editDialogVisible.value = false
-  editingId.value = null
-  ElMessage.success('已更新')
+  const index = notes.value.findIndex((n) => n.id === editingId.value)
+  if (index < 0) {
+    editDialogVisible.value = false
+    editingId.value = null
+    return
+  }
+  const snapshot = { ...notes.value[index] }
+  // 乐观更新
+  notes.value[index] = { ...notes.value[index], content, updatedAt: new Date().toISOString() }
+  loading.value = true
+  try {
+    const updated = await updateNote(editingId.value, { content })
+    notes.value[index] = updated
+    editDialogVisible.value = false
+    editingId.value = null
+    ElMessage.success('已更新')
+  } catch (e) {
+    notes.value[index] = snapshot
+    toastError(e, '更新失败，已回滚')
+  } finally {
+    loading.value = false
+  }
 }
 
 async function removeNote(note) {
@@ -84,11 +145,20 @@ async function removeNote(note) {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
     })
+    const snapshot = notes.value
     notes.value = notes.value.filter((n) => n.id !== note.id)
-    saveNotes()
-    ElMessage.success('已删除')
+    loading.value = true
+    try {
+      await deleteNote(note.id)
+      ElMessage.success('已删除')
+    } catch (e) {
+      notes.value = snapshot
+      toastError(e, '删除失败，已恢复')
+    } finally {
+      loading.value = false
+    }
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error('删除失败')
+    if (error !== 'cancel' && error !== 'close') toastError(error, '删除失败')
   }
 }
 
@@ -110,7 +180,7 @@ defineExpose({ loadNotes })
 </script>
 
 <template>
-  <div class="notes-panel">
+  <div class="notes-panel" v-loading="loading" element-loading-text="加载随心记…">
     <section class="workbench-card notes-compose">
       <el-input
         v-model="draft"

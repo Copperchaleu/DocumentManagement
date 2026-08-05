@@ -1,0 +1,137 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.1.1, pluggy-1.6.0 -- /Users/graypaul/.workbuddy/binaries/python/envs/default/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/graypaul/Projects/DocumentManagement
+plugins: anyio-4.14.2
+collecting ... collected 10 items
+
+qa/test_workbench_persistence.py::test_tables_exist PASSED               [ 10%]
+qa/test_workbench_persistence.py::test_task_camel_case_roundtrip FAILED  [ 20%]
+qa/test_workbench_persistence.py::test_user_key_isolation PASSED         [ 30%]
+qa/test_workbench_persistence.py::test_task_update_partial_and_404 PASSED [ 40%]
+qa/test_workbench_persistence.py::test_task_delete_204_and_404 PASSED    [ 50%]
+qa/test_workbench_persistence.py::test_notes_camel_case_output FAILED    [ 60%]
+qa/test_workbench_persistence.py::test_notes_crud PASSED                 [ 70%]
+qa/test_workbench_persistence.py::test_note_content_too_long_400 FAILED  [ 80%]
+qa/test_workbench_persistence.py::test_title_too_long_400 FAILED         [ 90%]
+qa/test_workbench_persistence.py::test_migrate_idempotent PASSED         [100%]
+
+=================================== FAILURES ===================================
+________________________ test_task_camel_case_roundtrip ________________________
+
+api = <starlette.testclient.TestClient object at 0x10a354f50>
+
+    def test_task_camel_case_roundtrip(api):
+        """用例2：POST camelCase 入参 -> GET 返回一致且字段为 camelCase。
+    
+        同时验证 camelCase 入参（dueTime / reminderAt / createdAt ...）被正确接受并落库，
+        这是“前端零映射”契约的核心。
+        """
+        payload = {
+            "id": "t-001",
+            "title": "示例待办",
+            "notes": "补充说明",
+            "priority": "high",
+            "dueDate": "2026-08-10",
+            "dueTime": "09:30",
+            "reminderAt": "2026-08-10T09:00:00",
+            "completed": False,
+            "notifiedAt": "",
+            "createdAt": "2026-08-05T08:00:00.000Z",
+            "updatedAt": "2026-08-05T08:00:00.000Z",
+        }
+        r = api.post("/api/workbench/tasks", params={"user_key": "UK_A"}, json=payload)
+        assert r.status_code == 200, r.text
+        body = r.json()
+    
+        # 响应必须是完整的 camelCase 字段
+        missing = [k for k in TASK_OUT_KEYS if k not in body]
+>       assert not missing, f"响应缺少 camelCase 字段 {missing}；实际字段={list(body.keys())}"
+E       AssertionError: 响应缺少 camelCase 字段 ['userKey', 'dueTime', 'reminderAt', 'notifiedAt', 'createdAt', 'updatedAt']；实际字段=['id', 'user_key', 'title', 'notes', 'priority', 'dueDate', 'due_time', 'reminder_at', 'completed', 'notified_at', 'created_at', 'updated_at']
+E       assert not ['userKey', 'dueTime', 'reminderAt', 'notifiedAt', 'createdAt', 'updatedAt']
+
+qa/test_workbench_persistence.py:104: AssertionError
+_________________________ test_notes_camel_case_output _________________________
+
+api = <starlette.testclient.TestClient object at 0x10a3e9370>
+
+    def test_notes_camel_case_output(api):
+        """用例6（契约）：笔记响应必须为 camelCase 字段（userKey/createdAt/updatedAt）。"""
+        r = api.post(
+            "/api/workbench/notes", params={"user_key": "UK_A"},
+            json={"id": "n-1", "content": "hello",
+                  "createdAt": "2026-08-05T08:00:00.000Z",
+                  "updatedAt": "2026-08-05T08:00:00.000Z"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        missing = [k for k in NOTE_OUT_KEYS if k not in body]
+>       assert not missing, f"笔记响应缺少 camelCase 字段 {missing}；实际字段={list(body.keys())}"
+E       AssertionError: 笔记响应缺少 camelCase 字段 ['userKey', 'createdAt', 'updatedAt']；实际字段=['id', 'user_key', 'content', 'created_at', 'updated_at']
+E       assert not ['userKey', 'createdAt', 'updatedAt']
+
+qa/test_workbench_persistence.py:180: AssertionError
+________________________ test_note_content_too_long_400 ________________________
+
+api = <starlette.testclient.TestClient object at 0x10a377020>
+
+    def test_note_content_too_long_400(api):
+        """用例6（边界）：content 501 字 -> 400。"""
+        r = api.post("/api/workbench/notes", params={"user_key": "UK_A"},
+                     json={"content": "x" * 501})
+>       assert r.status_code == 400, r.text
+E       AssertionError: {"detail":[{"type":"string_too_long","loc":["body","content"],"msg":"String should have at most 500 characters","input":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","ctx":{"max_length":500}}]}
+E       assert 422 == 400
+E        +  where 422 = <Response [422 Unprocessable Entity]>.status_code
+
+qa/test_workbench_persistence.py:210: AssertionError
+___________________________ test_title_too_long_400 ____________________________
+
+api = <starlette.testclient.TestClient object at 0x10a376be0>
+
+    def test_title_too_long_400(api):
+        """用例7：title 81 字 -> 400。"""
+        r = api.post("/api/workbench/tasks", params={"user_key": "UK_A"},
+                     json={"title": "x" * 81})
+>       assert r.status_code == 400, r.text
+E       AssertionError: {"detail":[{"type":"string_too_long","loc":["body","title"],"msg":"String should have at most 80 characters","input":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","ctx":{"max_length":80}}]}
+E       assert 422 == 400
+E        +  where 422 = <Response [422 Unprocessable Entity]>.status_code
+
+qa/test_workbench_persistence.py:218: AssertionError
+=============================== warnings summary ===============================
+backend/main.py:181
+  /Users/graypaul/Projects/DocumentManagement/backend/main.py:181: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+../../.workbuddy/binaries/python/envs/default/lib/python3.13/site-packages/fastapi/applications.py:4495
+../../.workbuddy/binaries/python/envs/default/lib/python3.13/site-packages/fastapi/applications.py:4495
+  /Users/graypaul/.workbuddy/binaries/python/envs/default/lib/python3.13/site-packages/fastapi/applications.py:4495: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)
+
+backend/main.py:188
+  /Users/graypaul/Projects/DocumentManagement/backend/main.py:188: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("shutdown")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED qa/test_workbench_persistence.py::test_task_camel_case_roundtrip - Ass...
+FAILED qa/test_workbench_persistence.py::test_notes_camel_case_output - Asser...
+FAILED qa/test_workbench_persistence.py::test_note_content_too_long_400 - Ass...
+FAILED qa/test_workbench_persistence.py::test_title_too_long_400 - AssertionE...
+=================== 4 failed, 6 passed, 4 warnings in 0.33s ====================

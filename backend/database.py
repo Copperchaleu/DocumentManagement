@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -25,6 +26,8 @@ class Database:
         self._ensure_migration_columns()
         # 周期版本表新增 Markdown 文本列与格式标识（覆盖全新库与旧库）
         self._ensure_period_version_columns()
+        # 确保工作面板表索引存在（覆盖全新库与未来补列路径）
+        self._ensure_workbench_columns()
 
     @contextmanager
     def connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -165,6 +168,49 @@ class Database:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_projects_created_at "
                 "ON projects(created_at)"
+            )
+
+            # 工作面板：待办 + 随心记（snake_case 列，按 user_key 隔离）
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workbench_tasks (
+                    id          TEXT    NOT NULL,
+                    user_key    TEXT    NOT NULL DEFAULT 'default',
+                    title       TEXT    NOT NULL,
+                    notes       TEXT    NOT NULL DEFAULT '',
+                    priority    TEXT    NOT NULL DEFAULT 'medium',
+                    due_date    TEXT    NOT NULL DEFAULT '',
+                    due_time    TEXT    NOT NULL DEFAULT '',
+                    reminder_at TEXT    NOT NULL DEFAULT '',
+                    completed   INTEGER NOT NULL DEFAULT 0,
+                    notified_at TEXT    NOT NULL DEFAULT '',
+                    created_at  TEXT    NOT NULL,
+                    updated_at  TEXT    NOT NULL,
+                    PRIMARY KEY (id),
+                    CHECK (priority IN ('high', 'medium', 'low')),
+                    CHECK (completed IN (0, 1))
+                );
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workbench_notes (
+                    id          TEXT    NOT NULL,
+                    user_key    TEXT    NOT NULL DEFAULT 'default',
+                    content     TEXT    NOT NULL DEFAULT '',
+                    created_at  TEXT    NOT NULL,
+                    updated_at  TEXT    NOT NULL,
+                    PRIMARY KEY (id)
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workbench_tasks_user "
+                "ON workbench_tasks(user_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workbench_notes_user "
+                "ON workbench_notes(user_key)"
             )
 
     def _migrate(self) -> None:
@@ -416,6 +462,23 @@ class Database:
     @staticmethod
     def _now() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _now_iso() -> str:
+        """ISO 8601 时间戳（带秒，无时区），工作面板表统一使用。"""
+        return datetime.now().isoformat(timespec="seconds")
+
+    def _ensure_workbench_columns(self) -> None:
+        """确保工作面板表索引存在（覆盖全新库与未来补列路径）。"""
+        with self.connect() as conn:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workbench_tasks_user "
+                "ON workbench_tasks(user_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workbench_notes_user "
+                "ON workbench_notes(user_key)"
+            )
 
     # ---------- categories (tree) ----------
 
@@ -1522,6 +1585,269 @@ class Database:
         for (_year, _quarter, label) in list_recent_quarters(quarters):
             result.append((label, counts.get(label, 0)))
         return result
+
+    # ---------- 工作面板：待办 / 随心记 ----------
+
+    def list_workbench_tasks(self, user_key: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM workbench_tasks
+                WHERE user_key = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (user_key or "default",),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_workbench_task(self, task_id: str, user_key: str) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM workbench_tasks WHERE id = ? AND user_key = ?",
+                (task_id, user_key or "default"),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def create_workbench_task(
+        self,
+        user_key: str,
+        id: Optional[str] = None,
+        title: str = "",
+        notes: str = "",
+        priority: str = "medium",
+        due_date: str = "",
+        due_time: str = "",
+        reminder_at: str = "",
+        completed: bool = False,
+        notified_at: str = "",
+        created_at: Optional[str] = None,
+        updated_at: Optional[str] = None,
+    ) -> dict[str, Any]:
+        now = self._now_iso()
+        task_id = id or str(uuid.uuid4())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO workbench_tasks
+                    (id, user_key, title, notes, priority, due_date, due_time,
+                     reminder_at, completed, notified_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    user_key or "default",
+                    (title or "").strip(),
+                    notes or "",
+                    priority or "medium",
+                    due_date or "",
+                    due_time or "",
+                    reminder_at or "",
+                    1 if completed else 0,
+                    notified_at or "",
+                    created_at or now,
+                    updated_at or now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM workbench_tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        return dict(row)
+
+    def update_workbench_task(
+        self, task_id: str, user_key: str, **fields: Any
+    ) -> Optional[dict[str, Any]]:
+        current = self.get_workbench_task(task_id, user_key)
+        if not current:
+            return None
+        now = self._now_iso()
+        pick = lambda key, default: fields[key] if key in fields else default
+        new_title = (pick("title", current["title"]) or "").strip()
+        new_notes = pick("notes", current["notes"]) or ""
+        new_priority = pick("priority", current["priority"]) or "medium"
+        new_due = pick("due_date", current["due_date"]) or ""
+        new_due_t = pick("due_time", current["due_time"]) or ""
+        new_rem = pick("reminder_at", current["reminder_at"]) or ""
+        new_completed = 1 if pick("completed", bool(current["completed"])) else 0
+        new_notified = pick("notified_at", current["notified_at"]) or ""
+        new_updated = pick("updated_at", now) or now
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE workbench_tasks
+                SET title=?, notes=?, priority=?, due_date=?, due_time=?,
+                    reminder_at=?, completed=?, notified_at=?, updated_at=?
+                WHERE id = ? AND user_key = ?
+                """,
+                (
+                    new_title,
+                    new_notes,
+                    new_priority,
+                    new_due,
+                    new_due_t,
+                    new_rem,
+                    new_completed,
+                    new_notified,
+                    new_updated,
+                    task_id,
+                    user_key or "default",
+                ),
+            )
+        return self.get_workbench_task(task_id, user_key)
+
+    def delete_workbench_task(self, task_id: str, user_key: str) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM workbench_tasks WHERE id = ? AND user_key = ?",
+                (task_id, user_key or "default"),
+            )
+            return cur.rowcount > 0
+
+    def list_workbench_notes(self, user_key: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM workbench_notes
+                WHERE user_key = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (user_key or "default",),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_workbench_note(
+        self, note_id: str, user_key: str
+    ) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM workbench_notes WHERE id = ? AND user_key = ?",
+                (note_id, user_key or "default"),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def create_workbench_note(
+        self,
+        user_key: str,
+        id: Optional[str] = None,
+        content: str = "",
+        created_at: Optional[str] = None,
+        updated_at: Optional[str] = None,
+    ) -> dict[str, Any]:
+        now = self._now_iso()
+        note_id = id or str(uuid.uuid4())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO workbench_notes
+                    (id, user_key, content, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    note_id,
+                    user_key or "default",
+                    (content or "").strip(),
+                    created_at or now,
+                    updated_at or now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM workbench_notes WHERE id = ?", (note_id,)
+            ).fetchone()
+        return dict(row)
+
+    def update_workbench_note(
+        self, note_id: str, user_key: str, content: str
+    ) -> Optional[dict[str, Any]]:
+        current = self.get_workbench_note(note_id, user_key)
+        if current is None:
+            return None
+        now = self._now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE workbench_notes
+                SET content = ?, updated_at = ?
+                WHERE id = ? AND user_key = ?
+                """,
+                ((content or "").strip(), now, note_id, user_key or "default"),
+            )
+        return self.get_workbench_note(note_id, user_key)
+
+    def delete_workbench_note(self, note_id: str, user_key: str) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM workbench_notes WHERE id = ? AND user_key = ?",
+                (note_id, user_key or "default"),
+            )
+            return cur.rowcount > 0
+
+    def migrate_workbench(
+        self,
+        user_key: str,
+        tasks: list[Any],
+        notes: list[Any],
+    ) -> dict[str, int]:
+        """幂等批量迁移：以 id 为主键，ON CONFLICT(id) DO UPDATE。
+
+        tasks/notes 元素可为 Pydantic 模型或 dict，统一以 snake_case 读取。
+        """
+        user_key = user_key or "default"
+        migrated_tasks = 0
+        migrated_notes = 0
+        with self.connect() as conn:
+            for t in tasks:
+                d = t.model_dump(by_alias=False) if hasattr(t, "model_dump") else dict(t)
+                tid = d.get("id") or str(uuid.uuid4())
+                conn.execute(
+                    """
+                    INSERT INTO workbench_tasks
+                        (id, user_key, title, notes, priority, due_date, due_time,
+                         reminder_at, completed, notified_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        user_key=excluded.user_key, title=excluded.title,
+                        notes=excluded.notes, priority=excluded.priority,
+                        due_date=excluded.due_date, due_time=excluded.due_time,
+                        reminder_at=excluded.reminder_at, completed=excluded.completed,
+                        notified_at=excluded.notified_at, updated_at=excluded.updated_at
+                    """,
+                    (
+                        tid,
+                        user_key,
+                        (d.get("title") or "").strip(),
+                        d.get("notes") or "",
+                        d.get("priority") or "medium",
+                        d.get("due_date") or "",
+                        d.get("due_time") or "",
+                        d.get("reminder_at") or "",
+                        1 if d.get("completed") else 0,
+                        d.get("notified_at") or "",
+                        d.get("created_at") or self._now_iso(),
+                        d.get("updated_at") or self._now_iso(),
+                    ),
+                )
+                migrated_tasks += 1
+            for n in notes:
+                d = n.model_dump(by_alias=False) if hasattr(n, "model_dump") else dict(n)
+                nid = d.get("id") or str(uuid.uuid4())
+                conn.execute(
+                    """
+                    INSERT INTO workbench_notes
+                        (id, user_key, content, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        user_key=excluded.user_key, content=excluded.content,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        nid,
+                        user_key,
+                        (d.get("content") or "").strip(),
+                        d.get("created_at") or self._now_iso(),
+                        d.get("updated_at") or self._now_iso(),
+                    ),
+                )
+                migrated_notes += 1
+        return {"migrated_tasks": migrated_tasks, "migrated_notes": migrated_notes}
 
     # ---------- helpers ----------
 

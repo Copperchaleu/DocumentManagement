@@ -78,3 +78,7 @@ export const getProjectStatsSummary = () =>
 
 export const getProjectStatsTrend = (range = 'day') =>
   http.get('/api/stats/projects-trend', { params: { range } })
+
+// ---------- 工作面板：待办 / 随心记 ----------
+
+export * from './workbench'

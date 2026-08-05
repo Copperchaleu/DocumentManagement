@@ -1,0 +1,126 @@
+classDiagram
+    class Database {
+        +connect() contextmanager
+        +_now_iso() str
+        +_init_schema()
+        +_ensure_workbench_columns()
+        +list_workbench_tasks(user_key) list~dict~
+        +get_workbench_task(id, user_key) dict
+        +create_workbench_task(user_key, **fields) dict
+        +update_workbench_task(id, user_key, **fields) dict
+        +delete_workbench_task(id, user_key) bool
+        +list_workbench_notes(user_key) list~dict~
+        +create_workbench_note(user_key, **fields) dict
+        +update_workbench_note(id, user_key, content) dict
+        +delete_workbench_note(id, user_key) bool
+        +migrate_workbench(user_key, tasks, notes) dict
+    }
+    class TaskCreate {
+        +id: Optional~str~
+        +title: str
+        +notes: str
+        +priority: Literal
+        +due_date: str
+        +due_time: str
+        +reminder_at: str
+        +completed: bool
+        +notified_at: str
+        +created_at: Optional~str~
+        +updated_at: Optional~str~
+    }
+    class TaskUpdate {
+        +title: Optional~str~
+        +notes: Optional~str~
+        +priority: Optional~Literal~
+        +due_date: Optional~str~
+        +due_time: Optional~str~
+        +reminder_at: Optional~str~
+        +completed: Optional~bool~
+        +notified_at: Optional~str~
+        +updated_at: Optional~str~
+    }
+    class NoteCreate {
+        +id: Optional~str~
+        +content: str
+        +created_at: Optional~str~
+        +updated_at: Optional~str~
+    }
+    class NoteUpdate {
+        +content: str
+    }
+    class WorkbenchMigrate {
+        +user_key: str
+        +tasks: list~TaskCreate~
+        +notes: list~NoteCreate~
+    }
+    class TaskOut {
+        +id: str
+        +user_key: str
+        +title: str
+        +notes: str
+        +priority: str
+        +due_date: str
+        +due_time: str
+        +reminder_at: str
+        +completed: bool
+        +notified_at: str
+        +created_at: str
+        +updated_at: str
+    }
+    class NoteOut {
+        +id: str
+        +user_key: str
+        +content: str
+        +created_at: str
+        +updated_at: str
+    }
+    class WorkbenchApi {
+        +list_workbench_tasks(user_key)
+        +create_workbench_task(body, user_key)
+        +update_workbench_task(task_id, body, user_key)
+        +delete_workbench_task(task_id, user_key)
+        +list_workbench_notes(user_key)
+        +create_workbench_note(body, user_key)
+        +update_workbench_note(note_id, body, user_key)
+        +delete_workbench_note(note_id, user_key)
+        +migrate_workbench(body)
+    }
+    class workbench_js {
+        +getUserKey() str
+        +getTasks() Promise
+        +createTask(task) Promise
+        +updateTask(id, patch) Promise
+        +deleteTask(id) Promise
+        +getNotes() Promise
+        +createNote(note) Promise
+        +updateNote(id, patch) Promise
+        +deleteNote(id) Promise
+        +migrateWorkbench(payload) Promise
+    }
+    class TaskBoardVue {
+        +loadTasks()
+        +submitTask()
+        +removeTask(task)
+        +toggleCompleted(task)
+        +checkReminders()
+    }
+    class NotesPanelVue {
+        +loadNotes()
+        +addNote()
+        +submitEdit()
+        +removeNote(note)
+    }
+
+    WorkbenchApi ..> Database : 调用(db 单例)
+    WorkbenchApi ..> TaskCreate : 校验
+    WorkbenchApi ..> TaskUpdate : 校验
+    WorkbenchApi ..> NoteCreate : 校验
+    WorkbenchApi ..> NoteUpdate : 校验
+    WorkbenchApi ..> WorkbenchMigrate : 校验
+    WorkbenchApi ..> TaskOut : 响应
+    WorkbenchApi ..> NoteOut : 响应
+    workbench_js ..> WorkbenchApi : HTTP /api/workbench/*
+    TaskBoardVue ..> workbench_js : getTasks/createTask/updateTask/deleteTask/migrate
+    NotesPanelVue ..> workbench_js : getNotes/createNote/updateNote/deleteNote/migrate
+    note "DB 表: workbench_tasks / workbench_notes (snake_case 列)" as DB
+    Database .. DB

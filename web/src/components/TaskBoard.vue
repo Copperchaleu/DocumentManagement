@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import {
   Bell,
@@ -12,8 +12,11 @@ import {
   Search,
   Warning,
 } from '@element-plus/icons-vue'
+import { getTasks, createTask, updateTask, deleteTask, migrateWorkbench } from '../api/workbench'
+import { toastError } from '../api/http'
 
-const STORAGE_KEY = 'document-management-workbench-tasks-v1'
+// 仅用于一次性迁移探测 + 离线回退读取，不再作为主存储。
+const LEGACY_STORAGE_KEY = 'document-management-workbench-tasks-v1'
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 const filters = [
   { value: 'all', label: '全部任务' },
@@ -37,6 +40,7 @@ const editingId = ref(null)
 const permissionState = ref(
   typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
 )
+const loading = ref(false)
 let reminderTimer = null
 
 const form = reactive(emptyForm())
@@ -110,8 +114,6 @@ const calendarDays = computed(() => {
   })
 })
 
-watch(tasks, saveTasks, { deep: true })
-
 function emptyForm() {
   return {
     title: '',
@@ -154,26 +156,57 @@ function compareTasks(a, b) {
 }
 
 function loadTasks() {
+  loading.value = true
+  getTasks()
+    .then((res) => {
+      tasks.value = Array.isArray(res?.items) ? res.items : []
+      // 后端为空且本地存在旧数据：一次性迁移到后端，再重载。
+      if (tasks.value.length === 0) {
+        const legacy = readLegacyTasks()
+        if (legacy.length > 0) {
+          return migrateWorkbench({ tasks: legacy, notes: [] })
+            .then(() => getTasks())
+            .then((reload) => {
+              tasks.value = Array.isArray(reload?.items) ? reload.items : []
+              clearLegacyTasks()
+            })
+            .catch((err) => {
+              // 迁移失败：回退使用本地缓存，保留旧数据以便重试。
+              tasks.value = legacy
+              toastError(err, '迁移失败，已使用本地缓存')
+            })
+        }
+      }
+    })
+    .catch((err) => {
+      // 网络/服务异常：回退本地缓存，保证不白屏。
+      tasks.value = readLegacyTasks()
+      toastError(err, '离线使用本地缓存')
+    })
+    .finally(() => {
+      loading.value = false
+    })
+}
+
+// 读取并归一化旧版 localStorage 数据（用于迁移探测与离线回退）。
+function readLegacyTasks() {
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
-    if (Array.isArray(stored)) {
-      // 兼容旧版百分比进度：100% 迁移为已完成，其余统一为未完成。
-      tasks.value = stored.map(({ progress, ...task }) => ({
-        ...task,
-        completed: typeof task.completed === 'boolean' ? task.completed : Number(progress) >= 100,
-      }))
-    }
+    const stored = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || '[]')
+    if (!Array.isArray(stored)) return []
+    return stored.map(({ progress, ...task }) => ({
+      ...task,
+      completed: typeof task.completed === 'boolean' ? task.completed : Number(progress) >= 100,
+    }))
   } catch {
-    tasks.value = []
-    ElMessage.warning('工作面板本地数据读取失败，已使用空列表')
+    return []
   }
 }
 
-function saveTasks(value) {
+function clearLegacyTasks() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
   } catch {
-    ElMessage.error('无法保存待办数据，请检查浏览器存储设置')
+    /* 忽略清除失败，下次仍可按空库触发迁移重试 */
   }
 }
 
@@ -211,23 +244,34 @@ async function submitTask() {
     reminderAt: form.reminderEnabled ? form.reminderAt : '',
     updatedAt: now,
   }
-  if (editingId.value) {
-    const index = tasks.value.findIndex((task) => task.id === editingId.value)
-    if (index >= 0) tasks.value[index] = { ...tasks.value[index], ...payload, notifiedAt: '' }
-    ElMessage.success('待办已更新')
-  } else {
-    tasks.value.unshift({
-      ...payload,
-      id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
-      createdAt: now,
-      completed: false,
-      notifiedAt: '',
-    })
-    ElMessage.success('待办已创建')
+  loading.value = true
+  try {
+    if (editingId.value) {
+      const updated = await updateTask(editingId.value, payload)
+      const index = tasks.value.findIndex((task) => task.id === editingId.value)
+      if (index >= 0) tasks.value[index] = updated
+      ElMessage.success('待办已更新')
+    } else {
+      const created = await createTask({
+        ...payload,
+        id:
+          globalThis.crypto?.randomUUID?.() ||
+          `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        createdAt: now,
+        completed: false,
+        notifiedAt: '',
+      })
+      tasks.value.unshift(created)
+      ElMessage.success('待办已创建')
+    }
+    dialogVisible.value = false
+    selectedDate.value = form.dueDate
+    calendarCursor.value = startOfMonth(new Date(`${form.dueDate}T00:00:00`))
+  } catch (e) {
+    toastError(e, '保存失败，请重试')
+  } finally {
+    loading.value = false
   }
-  dialogVisible.value = false
-  selectedDate.value = form.dueDate
-  calendarCursor.value = startOfMonth(new Date(`${form.dueDate}T00:00:00`))
 }
 
 async function removeTask(task) {
@@ -237,16 +281,36 @@ async function removeTask(task) {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
     })
+    const snapshot = tasks.value
     tasks.value = tasks.value.filter((item) => item.id !== task.id)
-    ElMessage.success('待办已删除')
+    loading.value = true
+    try {
+      await deleteTask(task.id)
+      ElMessage.success('待办已删除')
+    } catch (e) {
+      tasks.value = snapshot
+      toastError(e, '删除失败，已恢复')
+    } finally {
+      loading.value = false
+    }
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error('删除失败')
+    if (error !== 'cancel' && error !== 'close') toastError(error, '删除失败')
   }
 }
 
 function toggleCompleted(task) {
-  task.completed = !isCompleted(task)
+  const previous = task.completed
+  const next = !isCompleted(task)
+  task.completed = next
   task.updatedAt = new Date().toISOString()
+  updateTask(task.id, { completed: next, updatedAt: task.updatedAt })
+    .then((updated) => {
+      Object.assign(task, updated)
+    })
+    .catch((err) => {
+      task.completed = previous
+      toastError(err, '状态更新失败，已回滚')
+    })
 }
 
 function selectCalendarDay(day) {
@@ -311,6 +375,8 @@ function checkReminders() {
     const reminderTime = new Date(task.reminderAt).getTime()
     if (Number.isNaN(reminderTime) || reminderTime > now) return
     task.notifiedAt = new Date().toISOString()
+    // 持久化 notifiedAt，保证刷新后不再重复提醒（fire-and-forget，失败不影响会话内去重）
+    updateTask(task.id, { notifiedAt: task.notifiedAt }).catch(() => {})
     ElNotification({
       title: '待办提醒',
       message: task.title,
@@ -370,7 +436,7 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
     </section>
 
     <div class="workbench-grid">
-      <section class="workbench-card task-board">
+      <section class="workbench-card task-board" v-loading="loading" element-loading-text="加载待办…">
         <header class="workbench-card-head">
           <el-input v-model="keyword" class="task-search" clearable :prefix-icon="Search" placeholder="搜索待办…" />
         </header>

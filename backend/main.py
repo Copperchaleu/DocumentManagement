@@ -10,14 +10,15 @@ import shutil
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .database import Database
 from .markdown_utils import get_plain_text, sniff_content_format
@@ -237,6 +238,93 @@ class DatabaseBackupSettingsUpdate(BaseModel):
     directory: str = Field(..., min_length=1, max_length=1000)
     interval_hours: int = Field(..., ge=1, le=8760)
     max_backups: int = Field(..., ge=1, le=1000)
+
+
+# ---------- 工作面板：待办 / 随心记 模型 ----------
+# 字段名一律 snake_case，alias 用 camelCase；响应默认以 camelCase 输出。
+
+
+class TaskCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    id: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=80)
+    notes: str = ""
+    priority: Literal["high", "medium", "low"] = "medium"
+    due_date: str = Field(default="", alias="dueDate")
+    due_time: str = Field(default="", alias="dueTime")
+    reminder_at: str = Field(default="", alias="reminderAt")
+    completed: bool = False
+    notified_at: str = Field(default="", alias="notifiedAt")
+    created_at: Optional[str] = Field(default=None, alias="createdAt")
+    updated_at: Optional[str] = Field(default=None, alias="updatedAt")
+
+
+class TaskUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    notes: Optional[str] = None
+    priority: Optional[Literal["high", "medium", "low"]] = None
+    due_date: Optional[str] = Field(default=None, alias="dueDate")
+    due_time: Optional[str] = Field(default=None, alias="dueTime")
+    reminder_at: Optional[str] = Field(default=None, alias="reminderAt")
+    completed: Optional[bool] = None
+    notified_at: Optional[str] = Field(default=None, alias="notifiedAt")
+    updated_at: Optional[str] = Field(default=None, alias="updatedAt")
+
+
+class NoteCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    id: Optional[str] = None
+    content: str = Field(..., min_length=1, max_length=500)
+    created_at: Optional[str] = Field(default=None, alias="createdAt")
+    updated_at: Optional[str] = Field(default=None, alias="updatedAt")
+
+
+class NoteUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    content: str = Field(default=None, min_length=1, max_length=500)
+
+
+class WorkbenchMigrate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    user_key: str = "default"
+    tasks: list[TaskCreate] = Field(default_factory=list)
+    notes: list[NoteCreate] = Field(default_factory=list)
+
+
+class TaskOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    id: str
+    user_key: str = Field(default="default", alias="userKey")
+    title: str
+    notes: str = ""
+    priority: str = "medium"
+    due_date: str = Field(default="", alias="dueDate")
+    due_time: str = Field(default="", alias="dueTime")
+    reminder_at: str = Field(default="", alias="reminderAt")
+    completed: bool = False
+    notified_at: str = Field(default="", alias="notifiedAt")
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+
+
+class NoteOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    id: str
+    user_key: str = Field(default="default", alias="userKey")
+    content: str
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+
+
+class WorkbenchTaskList(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    items: list[TaskOut]
+
+
+class WorkbenchNoteList(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    items: list[NoteOut]
 
 
 # ---------- 工具函数 ----------
@@ -1850,6 +1938,81 @@ def stats_projects_trend(range: str = "day") -> ProjectStatsTrend:
         labels=[r[0] for r in rows],
         values=[int(r[1]) for r in rows],
     )
+
+
+# ---------- API：工作面板（待办 / 随心记） ----------
+
+
+@app.get("/api/workbench/tasks", response_model=WorkbenchTaskList)
+def list_workbench_tasks(user_key: str = "default"):
+    return WorkbenchTaskList(
+        items=[TaskOut(**row) for row in db.list_workbench_tasks(user_key)]
+    )
+
+
+@app.post("/api/workbench/tasks", response_model=TaskOut)
+def create_workbench_task(body: TaskCreate, user_key: str = "default"):
+    try:
+        return db.create_workbench_task(user_key=user_key, **body.model_dump(by_alias=False))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/workbench/tasks/{task_id}", response_model=TaskOut)
+def update_workbench_task(task_id: str, body: TaskUpdate, user_key: str = "default"):
+    updated = db.update_workbench_task(
+        task_id, user_key, **body.model_dump(by_alias=False, exclude_unset=True)
+    )
+    if updated is None:
+        raise HTTPException(404, "待办不存在")
+    return updated
+
+
+@app.delete("/api/workbench/tasks/{task_id}", status_code=204)
+def delete_workbench_task(task_id: str, user_key: str = "default"):
+    if not db.delete_workbench_task(task_id, user_key):
+        raise HTTPException(404, "待办不存在")
+
+
+@app.get("/api/workbench/notes", response_model=WorkbenchNoteList)
+def list_workbench_notes(user_key: str = "default"):
+    return WorkbenchNoteList(
+        items=[NoteOut(**row) for row in db.list_workbench_notes(user_key)]
+    )
+
+
+@app.post("/api/workbench/notes", response_model=NoteOut)
+def create_workbench_note(body: NoteCreate, user_key: str = "default"):
+    try:
+        return db.create_workbench_note(user_key=user_key, **body.model_dump(by_alias=False))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/workbench/notes/{note_id}", response_model=NoteOut)
+def update_workbench_note(note_id: str, body: NoteUpdate, user_key: str = "default"):
+    updated = db.update_workbench_note(note_id, user_key, content=body.content)
+    if updated is None:
+        raise HTTPException(404, "随心记不存在")
+    return updated
+
+
+@app.delete("/api/workbench/notes/{note_id}", status_code=204)
+def delete_workbench_note(note_id: str, user_key: str = "default"):
+    if not db.delete_workbench_note(note_id, user_key):
+        raise HTTPException(404, "随心记不存在")
+
+
+@app.post("/api/workbench/migrate")
+def migrate_workbench(body: WorkbenchMigrate):
+    return {"ok": True, **db.migrate_workbench(body.user_key, body.tasks, body.notes)}
+
+
+# 校验失败统一返回 400（设计契约 §3.2：title>80 / content>500 → 400），
+# 错误体保持 FastAPI 默认结构 {"detail": [...]}（前端通用错误解析兼容）。
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request, exc: RequestValidationError):
+    return JSONResponse(status_code=400, content={"detail": exc.errors()})
 
 
 # ---------- 静态前端 ----------

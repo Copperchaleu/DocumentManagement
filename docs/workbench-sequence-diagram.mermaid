@@ -1,0 +1,50 @@
+sequenceDiagram
+    actor U as 用户
+    participant TB as TaskBoard.vue
+    participant NB as NotesPanel.vue
+    participant API as workbench.js
+    participant S as FastAPI /api/workbench
+    participant DB as Database(SQLite)
+
+    Note over TB,NB: onMounted
+    TB->>API: getTasks()
+    API->>S: GET /tasks?user_key=XXX
+    S->>DB: list_workbench_tasks(user_key)
+    DB-->>S: items[]
+    S-->>API: {items:[]}
+    API-->>TB: []
+    alt 后端空 且 旧 localStorage 有数据
+        TB->>API: migrateWorkbench({tasks, notes})
+        API->>S: POST /migrate
+        S->>DB: migrate_workbench() ON CONFLICT(id) DO UPDATE
+        DB-->>S: {migrated_tasks, migrated_notes}
+        S-->>API: {ok:true,...}
+        TB->>API: getTasks() 重载
+        API->>S: GET /tasks
+        S->>DB: list_workbench_tasks
+        DB-->>S: items[...]
+        S-->>API: {items:[...]}
+        API-->>TB: 渲染
+    end
+
+    U->>TB: 勾选完成
+    TB->>TB: task.completed = !completed (乐观)
+    TB->>API: updateTask(id, {completed})
+    API->>S: PUT /tasks/{id}
+    S->>DB: update_workbench_task()
+    DB-->>S: 完整任务
+    S-->>API: TaskOut
+    API-->>TB: 覆盖本地项(含 updatedAt)
+    alt 失败
+        S-->>API: 4xx/5xx
+        API-->>TB: reject
+        TB->>TB: 回滚 completed=旧值 + toast
+    end
+
+    U->>NB: 记一笔
+    NB->>API: createNote({content})
+    API->>S: POST /notes
+    S->>DB: create_workbench_note()
+    DB-->>S: NoteOut
+    S-->>API: NoteOut
+    API-->>NB: unshift 到列表

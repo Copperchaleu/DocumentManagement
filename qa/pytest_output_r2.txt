@@ -1,0 +1,49 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.1.1, pluggy-1.6.0 -- /Users/graypaul/.workbuddy/binaries/python/envs/default/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/graypaul/Projects/DocumentManagement
+plugins: anyio-4.14.2
+collecting ... collected 10 items
+
+qa/test_workbench_persistence.py::test_tables_exist PASSED               [ 10%]
+qa/test_workbench_persistence.py::test_task_camel_case_roundtrip PASSED  [ 20%]
+qa/test_workbench_persistence.py::test_user_key_isolation PASSED         [ 30%]
+qa/test_workbench_persistence.py::test_task_update_partial_and_404 PASSED [ 40%]
+qa/test_workbench_persistence.py::test_task_delete_204_and_404 PASSED    [ 50%]
+qa/test_workbench_persistence.py::test_notes_camel_case_output PASSED    [ 60%]
+qa/test_workbench_persistence.py::test_notes_crud PASSED                 [ 70%]
+qa/test_workbench_persistence.py::test_note_content_too_long_400 PASSED  [ 80%]
+qa/test_workbench_persistence.py::test_title_too_long_400 PASSED         [ 90%]
+qa/test_workbench_persistence.py::test_migrate_idempotent PASSED         [100%]
+
+=============================== warnings summary ===============================
+backend/main.py:182
+  /Users/graypaul/Projects/DocumentManagement/backend/main.py:182: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+../../.workbuddy/binaries/python/envs/default/lib/python3.13/site-packages/fastapi/applications.py:4495
+../../.workbuddy/binaries/python/envs/default/lib/python3.13/site-packages/fastapi/applications.py:4495
+  /Users/graypaul/.workbuddy/binaries/python/envs/default/lib/python3.13/site-packages/fastapi/applications.py:4495: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)
+
+backend/main.py:189
+  /Users/graypaul/Projects/DocumentManagement/backend/main.py:189: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("shutdown")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 10 passed, 4 warnings in 0.29s ========================
