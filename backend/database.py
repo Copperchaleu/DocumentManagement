@@ -347,6 +347,72 @@ class Database:
                 "WHERE file_format IS NULL OR file_format = ''"
             )
 
+            # 旧库可能仍残留 file_content 的 NOT NULL 约束（迁移前曾为必填）。
+            # 当前设计下 file_content 仅作历史 docx 回滚备份，平时为 NULL；
+            # 否则 rebuild_period_markdown 未传 file_content 会触发 IntegrityError。
+            # 此处与代码/新 schema 意图对齐：在现有事务中放宽该约束（幂等）。
+            fc_info = next(
+                (
+                    r for r in conn.execute(
+                        "PRAGMA table_info(period_file_versions)"
+                    ).fetchall() if r["name"] == "file_content"
+                ),
+                None,
+            )
+            if fc_info and fc_info["notnull"] == 1:
+                conn.execute("PRAGMA foreign_keys=OFF")
+                # 动态取两表共有列，兼容极旧库缺列情形，避免 SELECT 列不存在
+                new_cols = [
+                    "id", "period_file_id", "version_no", "file_content",
+                    "md_content", "file_format", "file_size", "file_sha256",
+                    "source_sha256", "project_count", "change_reason",
+                    "source_snapshot_json", "created_at",
+                ]
+                old_cols = [
+                    r["name"]
+                    for r in conn.execute(
+                        "PRAGMA table_info(period_file_versions)"
+                    ).fetchall()
+                ]
+                common = [c for c in new_cols if c in old_cols]
+                col_sql = ", ".join(common)
+                conn.execute(
+                    "ALTER TABLE period_file_versions "
+                    "RENAME TO period_file_versions_old"
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE period_file_versions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        period_file_id INTEGER NOT NULL,
+                        version_no INTEGER NOT NULL,
+                        file_content BLOB,
+                        md_content TEXT NOT NULL DEFAULT '',
+                        file_format TEXT NOT NULL DEFAULT 'md',
+                        file_size INTEGER NOT NULL DEFAULT 0,
+                        file_sha256 TEXT NOT NULL DEFAULT '',
+                        source_sha256 TEXT NOT NULL DEFAULT '',
+                        project_count INTEGER DEFAULT 0,
+                        change_reason TEXT DEFAULT '',
+                        source_snapshot_json TEXT DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        UNIQUE(period_file_id, version_no),
+                        FOREIGN KEY (period_file_id)
+                            REFERENCES period_files(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                conn.execute(
+                    f"INSERT INTO period_file_versions ({col_sql}) "
+                    f"SELECT {col_sql} FROM period_file_versions_old"
+                )
+                conn.execute("DROP TABLE period_file_versions_old")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_period_versions_file "
+                    "ON period_file_versions(period_file_id, version_no DESC)"
+                )
+                conn.execute("PRAGMA foreign_keys=ON")
+
     @staticmethod
     def _now() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
