@@ -67,16 +67,25 @@ export function getLeafDescendantIds(targetId, flatList) {
 }
 
 export function toElTreeData(nodes) {
-  const walk = (list) =>
-    (list || []).map((n) => ({
-      id: n.id,
-      label: n.name,
-      is_leaf: n.is_leaf,
-      project_count: n.project_count || 0,
-      path_label: n.path_label,
-      raw: n,
-      children: n.children?.length ? walk(n.children) : undefined,
-    }))
+  const walk = (list) => {
+    if (!list || !list.length) return []
+    return list.map((n) => {
+      const children = n.children?.length ? walk(n.children) : undefined
+      const own = Number(n.project_count) || 0
+      const childrenSum = children
+        ? children.reduce((s, c) => s + (Number(c.project_count) || 0), 0)
+        : 0
+      return {
+        id: n.id,
+        label: n.name,
+        is_leaf: n.is_leaf,
+        project_count: own + childrenSum,
+        path_label: n.path_label,
+        raw: n,
+        children,
+      }
+    })
+  }
   return walk(nodes)
 }
 

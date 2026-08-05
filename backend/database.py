@@ -448,9 +448,15 @@ class Database:
                     )
                     """
                 )
+                # 新表 md_content 为 NOT NULL，而旧 docx 行 md_content 为 NULL；
+                # 重建时 COALESCE 到默认值 ''，否则 NOT NULL 约束失败。
+                select_exprs = [
+                    "COALESCE(md_content, '')" if c == "md_content" else c
+                    for c in common
+                ]
                 conn.execute(
                     f"INSERT INTO period_file_versions ({col_sql}) "
-                    f"SELECT {col_sql} FROM period_file_versions_old"
+                    f"SELECT {', '.join(select_exprs)} FROM period_file_versions_old"
                 )
                 conn.execute("DROP TABLE period_file_versions_old")
                 conn.execute(
