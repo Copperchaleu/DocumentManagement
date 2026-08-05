@@ -156,7 +156,7 @@ async function onDelete(row) {
           含草稿
         </el-checkbox>
         <el-button @click="onRefresh" :loading="appState.loadingProjects">刷新</el-button>
-        <el-button type="primary" @click="$router.push({ name: 'compose' })">新建项目</el-button>
+        <el-button type="primary" @click="$router.push({ name: 'compose', query: { create: String(Date.now()) } })">新建项目</el-button>
       </div>
     </div>
 

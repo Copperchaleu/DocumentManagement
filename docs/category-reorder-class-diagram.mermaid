@@ -1,0 +1,63 @@
+classDiagram
+    direction TB
+    class CategoryReorderReq {
+        +int|null parent_id
+        +list~int~ ordered_ids
+    }
+    class CategoryReorderResp {
+        +bool ok
+    }
+    class CategoryUpdate {
+        +Optional~str~ name
+        +Optional~str~ path
+        +Optional~str~ description
+        +Optional~int~ parent_id
+        +Optional~int~ sort_order
+    }
+    class CategoryCreate {
+        +str name
+        +str path
+        +str description
+        +Optional~int~ parent_id
+        +Optional~int~ sort_order
+    }
+    class Database {
+        +reorder_siblings(parent_id, ordered_ids) void
+        +update_category(...) dict
+        +create_category(...) dict
+        +get_category_tree() list
+    }
+    class CategoryTreeNode {
+        +int id
+        +int|null parent_id
+        +str name
+        +list~CategoryTreeNode~ children
+        +bool is_leaf
+        +int child_count
+        +int project_count
+        +str path
+        +str path_label
+        +list~str~ path_names
+    }
+    class CategoriesView {
+        +allowDrop(draggingNode, dropNode, type) bool
+        +onNodeDrop(draggingNode) void
+        +onDragStart(draggingNode) void
+        +onDragEnd() void
+        +maybeWarn() void
+    }
+    class AppState {
+        +list categoryTree
+        +list categories
+        +refreshCategories() void
+    }
+    class ApiClient {
+        +reorderCategories(payload) Promise
+    }
+    CategoryReorderReq ..> CategoryReorderResp : returns
+    Database ..> CategoryTreeNode : produces(get_category_tree)
+    CategoriesView ..> CategoryTreeNode : binds as el-tree data
+    CategoriesView ..> AppState : reads/writes categoryTree(reactive)
+    CategoriesView ..> ApiClient : calls reorder
+    ApiClient ..> CategoryReorderReq : POST /api/categories/reorder
+    Database ..> CategoryReorderReq : validates(4 checks)

@@ -302,6 +302,9 @@ function loadEditPayload() {
     form.projectId = p.id
     form.title = p.title || ''
     form.content = p.content || ''
+    // 防御：若编辑器已挂载（运行时路由切换进来的场景），立即写入内容，
+    // 避免 watch(modelValue) 的 setHtml 与编辑器异步初始化之间的竞态
+    if (editorRef.value) editorRef.value.setHtml(form.content || '')
     form.categoryId = p.category_id || null
     form.timeModes = p.time_modes?.length ? [...p.time_modes] : ['week', 'month', 'quarter']
     dirty.value = false
@@ -314,13 +317,19 @@ function loadEditPayload() {
   }
 }
 
+// 关键修复：在富文本编辑器挂载前同步加载表单数据，
+// 使 <Editor> 初始化时 modelValue 已含内容，避免 wangEditor 异步初始空 html 覆盖内容（偶发内容丢失）
+if (route.query.edit) {
+  loadEditPayload()
+} else if (route.query.create) {
+  loadCreateRequest()
+}
+
 onMounted(async () => {
   if (!appState.timeInfo) await refreshTimeInfo()
   if (appState.timeInfo?.autosave_seconds) {
     autosaveSeconds.value = Number(appState.timeInfo.autosave_seconds)
   }
-  if (route.query.edit) loadEditPayload()
-  else if (route.query.create) loadCreateRequest()
   restartAutosaveTimer()
 })
 

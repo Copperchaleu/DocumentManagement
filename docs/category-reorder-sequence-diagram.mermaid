@@ -1,0 +1,49 @@
+sequenceDiagram
+    autonumber
+    actor User
+    participant View as CategoriesView(el-tree)
+    participant Store as appState
+    participant API as reorderCategories
+    participant Srv as POST /api/categories/reorder
+    participant DB as Database.reorder_siblings
+
+    Note over User,View: ① 拖拽中（allow-drop 实时拦截）
+    User->>View: 拖动节点
+    loop 每次 hover 候选落点
+        View->>View: allowDrop(dragging, drop, type)
+        alt type=='inner' 或 跨父级
+            View-->>User: 内置 not-allowed 光标 + 节流 ElMessage.warning
+            Note right of View: 返回 false → 不响应 drop
+        else 同父同级
+            View-->>User: 显示插入指示线(.el-tree__drop-indicator)
+            Note right of View: 返回 true → 允许放置
+        end
+    end
+
+    Note over User,View: ② 松手于合法位置
+    User->>View: drop
+    View->>View: el-tree 就地移动节点（子树整体随动，乐观更新）
+    View->>View: onNodeDrop → saving=true（禁用拖拽防重入）
+    View->>View: parentKey = draggingNode.parent.key ?? null
+    View->>View: orderedIds = parent.childNodes.map(n=>n.data.id)
+
+    View->>API: reorderCategories({parent_id, ordered_ids})
+    API->>Srv: POST /api/categories/reorder
+    Srv->>DB: reorder_siblings(parent_id, ordered_ids)
+    DB->>DB: 事务内 4 项校验(非空去重/均存在/同父/全覆盖)
+
+    alt 校验通过 + 写入成功
+        DB-->>Srv: commit(无返回)
+        Srv-->>API: 200 {ok:true}
+        API-->>View: resolve
+        View->>View: saving=false
+        Note right of View: 本地顺序即定稿（appState.categoryTree 已就地更新，其它视图响应式同步）
+    else 任一校验失败
+        DB-->>Srv: rollback(不改任何 sort_order)
+        Srv-->>API: 400 {detail: reason}
+        API-->>View: reject(error.friendlyMessage)
+        View->>View: toastError(e) 显示 reason
+        View->>Store: refreshCategories()
+        Store-->>View: 重新赋值 categoryTree（服务端顺序）
+        View->>View: el-tree 重建 → 回弹到原序；saving=false
+    end

@@ -4,6 +4,7 @@ import { Bell, Plus } from '@element-plus/icons-vue'
 import TaskBoard from '../components/TaskBoard.vue'
 import DashboardPanel from '../components/DashboardPanel.vue'
 import NotesPanel from '../components/NotesPanel.vue'
+import { appState } from '../stores/appState'
 
 // TaskBoard 通过 defineExpose 暴露 createTaskToday / enableNotifications /
 // permissionState，hero 区的「新建待办 / 开启系统提醒」按钮直接委托给它。
@@ -16,6 +17,16 @@ const greeting = computed(() => {
   if (hour < 18) return '下午好'
   return '晚上好'
 })
+
+const todayInfo = computed(() => {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  const today = `${y}-${m}-${d}`
+  const week = appState.timeInfo?.week?.iso_week
+  return { today, week }
+})
 </script>
 
 <template>
@@ -24,6 +35,10 @@ const greeting = computed(() => {
       <div class="hero-copy">
         <div class="hero-eyebrow"><span /> WORKSPACE</div>
         <h1>{{ greeting }}，开始今天的工作吧</h1>
+        <div class="hero-date">
+          <span class="date-dot" />
+          <span>今天 {{ todayInfo.today }}<template v-if="todayInfo.week"> · 第{{ todayInfo.week }}周</template></span>
+        </div>
         <p>把重要事项放在这里，按节奏推进，不遗漏每一个时间节点。</p>
       </div>
       <div class="hero-actions">
@@ -81,6 +96,27 @@ const greeting = computed(() => {
 .hero-eyebrow { display: flex; align-items: center; gap: 8px; }
 .hero-eyebrow span { width: 18px; height: 2px; border-radius: 2px; background: #6366f1; }
 .hero-copy h1 { margin: 9px 0 8px; color: #172554; font-size: clamp(24px, 2.3vw, 34px); line-height: 1.2; letter-spacing: -.03em; }
+.hero-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  padding: 5px 13px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.10);
+  border: 1px solid rgba(79, 70, 229, 0.20);
+  color: #3730a3;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.hero-date .date-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4f46e5;
+  flex-shrink: 0;
+}
 .hero-copy p { margin: 0; color: #64748b; font-size: 14px; }
 .hero-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 

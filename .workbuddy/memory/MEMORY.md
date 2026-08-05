@@ -18,3 +18,11 @@
 - 区域三·随心记：`NotesPanel.vue`，localStorage key `document-management-workbench-notes-v1` `{id,content,createdAt,updatedAt}`
 - 后端统计：`GET /api/stats/projects-summary`、`GET /api/stats/projects-trend?range=day|month|quarter`；仅统计 `status='saved'`，按 `created_at` 本地日期归窗；窗口 14天/6月/8季
 - 待办 localStorage key 仍为 `document-management-workbench-tasks-v1`（抽取未改 key，零回归）
+
+## 分类管理页拖拽排序（el-tree + reorder 端点）
+- 分类管理页 `web/src/views/CategoriesView.vue` 由 el-table 重写为 **el-tree**（绑定 `appState.categoryTree`，`node-key=id`），支持拖拽排序。
+- 约束：仅同级（同 parent_id）重排；跨父级/跨层级（type==='inner'）在 `allowDrop` 拦截并节流 `ElMessage.warning`；子树整体随节点移动天然成立。
+- 更新策略：乐观更新——el-tree 就地移动 → 调 reorder；失败 `refreshCategories()` 回滚 + `toastError`（来自 `web/src/api/http.js`）。`saving` 期间 `:draggable=false` 防重入。
+- 后端：`POST /api/categories/reorder`，body `{parent_id:int|null, ordered_ids:[int]}`（须覆盖该父级全部兄弟）；`database.reorder_siblings` 单事务 + 4 项校验（空/重复/同父/全覆盖），非法抛 ValueError→400 且事务回滚不改 sort_order。`categories.sort_order` 列现被正式写入启用。
+- `CategoryUpdate`/`CategoryCreate` 已增 `sort_order` 可选字段；`PUT /api/categories/{id}` 透传。
+- 设计文档：`docs/design_category_reorder.md`；测试：`qa/backend_reorder_test.py`、`qa/frontend_reorder_test.mjs`（31/31 PASS）。

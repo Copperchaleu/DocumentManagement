@@ -205,6 +205,7 @@ class CategoryCreate(BaseModel):
     path: str = ""
     description: str = ""
     parent_id: Optional[int] = None
+    sort_order: Optional[int] = None
 
 
 class CategoryUpdate(BaseModel):
@@ -212,6 +213,14 @@ class CategoryUpdate(BaseModel):
     path: Optional[str] = None
     description: Optional[str] = None
     parent_id: Optional[int] = None
+    sort_order: Optional[int] = None
+
+
+class CategoryReorder(BaseModel):
+    """同级重排请求：把 parent_id 下的全部兄弟按 ordered_ids 顺序重排。"""
+
+    parent_id: Optional[int] = None
+    ordered_ids: list[int] = Field(..., min_length=1)
 
 
 class ProjectDraftSave(BaseModel):
@@ -1129,6 +1138,21 @@ def create_category(body: CategoryCreate):
         raise HTTPException(400, f"创建失败：{e}")
 
 
+@app.post("/api/categories/reorder")
+def reorder_categories(body: CategoryReorder):
+    """同级批量重排：原子持久化 sort_order（索引 0..n-1）。
+
+    校验失败抛 ValueError → 400，且事务回滚不改任何 sort_order。
+    """
+    try:
+        db.reorder_siblings(body.parent_id, body.ordered_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # pragma: no cover - 数据库层非预期异常兜底
+        raise HTTPException(status_code=400, detail=f"排序保存失败：{e}")
+    return {"ok": True}
+
+
 @app.put("/api/categories/{category_id}")
 def update_category(category_id: int, body: CategoryUpdate):
     current = db.get_category(category_id)
@@ -1156,6 +1180,7 @@ def update_category(category_id: int, body: CategoryUpdate):
             path=new_path if new_path is not None else None,
             description=body.description,
             parent_id=parent_arg,
+            sort_order=body.sort_order,  # None 时 db 保持原值
         )
         if not item:
             raise HTTPException(404, "分类不存在")

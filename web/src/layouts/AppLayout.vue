@@ -65,19 +65,13 @@ const tabs = [
   { name: 'settings', label: '系统设置' },
 ]
 
-const weekHint = computed(() => {
-  const now = new Date()
-  const y = now.getFullYear()
-  const m = String(now.getMonth() + 1).padStart(2, '0')
-  const d = String(now.getDate()).padStart(2, '0')
-  const today = `${y}-${m}-${d}`
-  const week = appState.timeInfo?.week
-  if (!week) return `今天 ${today}`
-  return `今天 ${today} · 第${week.iso_week}周`
-})
-
 function onTabChange(name) {
-  router.push({ name })
+  if (name === 'compose') {
+    // 带 create query，确保进入空白新建态；否则从编辑态点回「项目编辑」会残留旧项目内容
+    router.push({ name, query: { create: String(Date.now()) } })
+  } else {
+    router.push({ name })
+  }
 }
 
 function onTreeClick(data) {
@@ -199,10 +193,6 @@ onMounted(async () => {
             @change="onTabChange"
           />
         </div>
-        <div class="topbar-week">
-          <span class="week-dot" />
-          <span>{{ weekHint }}</span>
-        </div>
         <el-input
           v-model="keyword"
           clearable
@@ -288,29 +278,6 @@ onMounted(async () => {
 
 .topbar-nav {
   min-width: 0;
-}
-
-.topbar-week {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 14px;
-  border-radius: 999px;
-  background: rgba(79, 70, 229, 0.08);
-  border: 1px solid rgba(79, 70, 229, 0.18);
-  color: #3730a3;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.topbar-week .week-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #4f46e5;
-  flex-shrink: 0;
 }
 
 .topbar-search {

@@ -499,6 +499,74 @@ class Database:
             cur = conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
             return cur.rowcount > 0
 
+    def reorder_siblings(
+        self, parent_id: Optional[int], ordered_ids: list[int]
+    ) -> None:
+        """原子重排某父级下的全部兄弟分类（sort_order = 索引 0..n-1）。
+
+        parent_id=None 表示根级。ordered_ids 必须覆盖该父级下全部兄弟（顺序即新顺序）。
+        任一校验失败抛 ValueError，调用方转 HTTP 400，事务回滚（不改任何 sort_order）。
+        """
+        if not ordered_ids:
+            raise ValueError("ordered_ids 不能为空")
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise ValueError("ordered_ids 存在重复，请提交完整的兄弟顺序")
+
+        with self.connect() as conn:  # 单事务：成功 commit，异常 rollback（不改任何 sort_order）
+            placeholders = ",".join("?" * len(ordered_ids))
+            rows = conn.execute(
+                f"SELECT id, parent_id FROM categories WHERE id IN ({placeholders})",
+                tuple(ordered_ids),
+            ).fetchall()
+            found = {
+                int(r["id"]): (r["parent_id"] if r["parent_id"] is not None else None)
+                for r in rows
+            }
+
+            # 1) 全部存在
+            missing = [cid for cid in ordered_ids if cid not in found]
+            if missing:
+                raise ValueError(f"存在不存在的分类：{missing[0]} 等")
+
+            # 2) 同父（None 与 None 视为相等；非 None 严格相等）
+            for cid in ordered_ids:
+                cur = found[cid]
+                same = (cur is None) == (parent_id is None) and (
+                    cur is None or int(cur) == int(parent_id)
+                )
+                if not same:
+                    raise ValueError("ordered_ids 包含不同父级的分类，仅允许同级重排")
+
+            # 3) 全覆盖兄弟
+            if parent_id is None:
+                sibs = conn.execute(
+                    "SELECT id FROM categories WHERE parent_id IS NULL"
+                ).fetchall()
+            else:
+                sibs = conn.execute(
+                    "SELECT id FROM categories WHERE parent_id = ?", (parent_id,)
+                ).fetchall()
+            sibling_ids = {int(r["id"]) for r in sibs}
+            given = set(ordered_ids)
+            if sibling_ids != given:
+                miss = sorted(sibling_ids - given)
+                extra = sorted(given - sibling_ids)
+                if miss:
+                    raise ValueError(
+                        f"ordered_ids 未覆盖该父级下全部兄弟，缺少：{miss}"
+                    )
+                raise ValueError(
+                    f"ordered_ids 包含非该父级兄弟的 id：{extra}"
+                )
+
+            # 原子写入：按给定顺序赋 sort_order = 索引
+            now = self._now()
+            for k, cid in enumerate(ordered_ids):
+                conn.execute(
+                    "UPDATE categories SET sort_order = ?, updated_at = ? WHERE id = ?",
+                    (k, now, cid),
+                )
+
     # ---------- projects ----------
 
     def create_project(

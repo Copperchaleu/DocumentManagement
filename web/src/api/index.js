@@ -9,6 +9,8 @@ export const createCategory = (data) => http.post('/api/categories', data)
 export const updateCategory = (id, data) => http.put(`/api/categories/${id}`, data)
 export const deleteCategory = (id) => http.delete(`/api/categories/${id}`)
 export const openCategoryFolder = (id) => http.post(`/api/categories/${id}/open-folder`)
+// 同级批量重排：body = { parent_id: int|null, ordered_ids: number[] }
+export const reorderCategories = (data) => http.post('/api/categories/reorder', data)
 export const browseFolder = (initialPath, purpose = 'category') =>
   http.post('/api/browse-folder', null, {
     params: {
