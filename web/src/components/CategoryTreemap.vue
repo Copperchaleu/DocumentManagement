@@ -8,7 +8,7 @@ const props = defineProps({
 
 const router = useRouter()
 
-// 根容器与图表实例引用：用于解决 0 宽渲染空白与切回缓存态不重绘问题
+// 根容器与图表实例引用：用于解决 0 宽首次空白与切回缓存态不重绘问题
 const wrapRef = ref(null)
 const chartRef = ref(null)
 // ResizeObserver 句柄（onBeforeUnmount 时需 disconnect）
@@ -53,6 +53,25 @@ const treemapSeries = computed(() => {
 // 当前层级是否至少有一个方块
 const hasData = computed(() => currentFlat.value.length > 0)
 
+// 处理 Treemap 方块点击：有子分类仅下钻；叶子才跳转项目列表并筛选
+function onTreemapClick(_event, _chartContext, config) {
+  // 边界防护：dataPointIndex 可能为 undefined / -1 / 越界
+  const idx = config?.dataPointIndex
+  if (idx == null || idx < 0 || idx >= currentFlat.value.length) return
+
+  const node = currentFlat.value[idx]
+  if (!node) return
+
+  if (node.hasChildren) {
+    // 有子分类：仅逐级展开下一级，绝不跳转 projects
+    drillPath.value = [...drillPath.value, { id: node.id, name: node.name }]
+    return
+  }
+
+  // 叶子（最后一级）：跳转项目列表并按该分类筛选
+  router.push({ name: 'projects', query: { categoryId: String(node.id) } })
+}
+
 const treemapOptions = computed(() => ({
   chart: {
     type: 'treemap',
@@ -60,17 +79,7 @@ const treemapOptions = computed(() => ({
     toolbar: { show: false },
     animations: { enabled: true, speed: 400 },
     events: {
-      click: (event, chartContext, config) => {
-        const node = currentFlat.value[config.dataPointIndex]
-        if (!node) return
-        if (node.hasChildren) {
-          // 有子分类：逐级展开下一级（名称只显示当前级）
-          drillPath.value = [...drillPath.value, { id: node.id, name: node.name }]
-        } else {
-          // 叶子（终点）：跳转项目列表查看其项目
-          router.push({ name: 'projects', query: { categoryId: String(node.id) } })
-        }
-      },
+      click: onTreemapClick,
     },
   },
   legend: { show: false },
@@ -90,7 +99,19 @@ const treemapOptions = computed(() => ({
   stroke: { width: 2, colors: ['#fff'] },
   tooltip: {
     enabled: true,
-    y: { formatter: (val) => `${val} 个项目` },
+    // 按叶子/非叶子给出不同操作暗示
+    custom: ({ seriesIndex, dataPointIndex, w }) => {
+      const node = currentFlat.value[dataPointIndex]
+      const name = node?.name ?? w?.globals?.labels?.[dataPointIndex] ?? ''
+      const val = node?.total ?? w?.globals?.series?.[seriesIndex]?.[dataPointIndex] ?? 0
+      const hint = node?.hasChildren ? '点击展开下一级' : '点击查看该分类下的项目'
+      return (
+        `<div class="apexcharts-tooltip-title" style="font-family:inherit;font-size:12px;padding:6px 10px;">` +
+        `${name}</div>` +
+        `<div style="font-family:inherit;font-size:12px;padding:6px 10px;">` +
+        `${val} 个项目<br/><span style="color:#64748b;">${hint}</span></div>`
+      )
+    },
   },
 }))
 
@@ -121,6 +142,8 @@ function goRoot() {
   drillPath.value = []
 }
 function goTo(index) {
+  // 当前层不可再点回自身
+  if (index === drillPath.value.length - 1) return
   drillPath.value = drillPath.value.slice(0, index + 1)
 }
 
@@ -202,4 +225,8 @@ onBeforeUnmount(() => {
 .crumb.current:hover { background: transparent; }
 .crumb-sep { color: #94a3b8; }
 .cat-empty { padding: 24px; text-align: center; color: #94a3b8; font-size: 13px; }
+/* ApexCharts treemap 方块统一 pointer，tooltip 区分叶子/非叶子操作 */
+.cat-treemap :deep(.apexcharts-treemap-rect) {
+  cursor: pointer;
+}
 </style>

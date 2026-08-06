@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -30,24 +30,37 @@ const tableRef = ref(null)
 const tableWrapRef = ref(null)
 let tableResizeObserver = null
 
+/**
+ * 从路由 query 应用分类筛选。
+ * 仅当存在合法 categoryId 时强制写入并刷新——避免侧栏点「项目列表」无 query 时误清空用户当前筛选。
+ * 覆盖 keep-alive 下二次进入同一组件时 onMounted 不触发的场景。
+ */
+function applyCategoryFilterFromRoute() {
+  const cid = route.query.categoryId
+  if (cid == null || cid === '') return
+  const id = Number(cid)
+  if (Number.isNaN(id)) return
+  appState.selectedCategoryId = id
+  refreshProjects()
+}
+
 // 侧边栏展开/折叠、窗口缩放会改变表格容器宽度；固定列需重新布局，否则"操作"列会与相邻列重叠
 onMounted(() => {
-  // 从路由 query 读取分类 ID（如从 treemap 点击跳转过来）
-  const cid = route.query.categoryId
-  if (cid != null) {
-    const id = Number(cid)
-    if (!isNaN(id)) {
-      appState.selectedCategoryId = id
-      // 设置筛选条件后主动重新加载列表，否则 cascader 显示已切换但表格未按新条件刷新
-      onRefresh()
-    }
-  }
+  applyCategoryFilterFromRoute()
   if (typeof ResizeObserver === 'undefined' || !tableWrapRef.value) return
   tableResizeObserver = new ResizeObserver(() => {
     tableRef.value?.doLayout?.()
   })
   tableResizeObserver.observe(tableWrapRef.value)
 })
+
+// keep-alive 缓存 + 同组件重复进入：query.categoryId 变化时重新应用筛选
+watch(
+  () => route.query.categoryId,
+  () => {
+    applyCategoryFilterFromRoute()
+  }
+)
 
 onUnmounted(() => {
   tableResizeObserver?.disconnect()
