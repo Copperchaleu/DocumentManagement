@@ -607,6 +607,14 @@ class Database:
                 by_id[pid]["children"].append(node)
             else:
                 roots.append(node)
+        # 显式按 sort_order 排兄弟序（防御：即使 flat 遍历顺序变化也能正确渲染）
+        def sort_key(n: dict[str, Any]) -> tuple:
+            return (int(n.get("sort_order") or 0), (n.get("name") or "").lower())
+
+        roots.sort(key=sort_key)
+        for node in by_id.values():
+            if node["children"]:
+                node["children"].sort(key=sort_key)
         return roots
 
     def get_category(self, category_id: int) -> Optional[dict[str, Any]]:

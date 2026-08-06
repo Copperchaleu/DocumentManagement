@@ -2086,8 +2086,24 @@ async def _validation_exception_handler(request, exc: RequestValidationError):
 
 # ---------- 静态前端 ----------
 
+class NoCacheStaticFiles(StaticFiles):
+    """前端为本地构建产物，禁用强缓存。
+
+    项目里 api/CategoriesView 等 chunk 文件名带稳定哈希（内容变了 URL 不变），
+    浏览器会一直命中旧缓存，导致「源码已修、但页面仍跑旧构建」的功能看似不生效
+    （典型如分类拖拽排序刷新后没保存）。此处对所有静态响应加 no-cache，
+    浏览器每次重新校验（ETag 未变则返回 304，重建后内容变则返回 200 新产物），
+    从源头杜绝陈旧 chunk 缓存问题。
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers.update({"Cache-Control": "no-cache"})
+        return response
+
+
 if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="frontend")
+    app.mount("/", NoCacheStaticFiles(directory=str(STATIC_DIR), html=True), name="frontend")
 
 
 def run() -> None:

@@ -60,15 +60,52 @@ check('allowDrop 根级 允许', () => {
 })
 
 // ---- 兄弟顺序计算（onNodeDrop 口径）----
+// 与 CategoriesView.collectSiblingIds 一致：优先 childNodes，兜底 data/children
+function collectSiblingIds(parentNode) {
+  if (!parentNode) return []
+  const fromNodes = (parentNode.childNodes || [])
+    .map((n) => n.data?.id)
+    .filter((id) => id != null)
+  if (fromNodes.length) return fromNodes
+  const dataKids = Array.isArray(parentNode.data)
+    ? parentNode.data
+    : parentNode.data?.children
+  return (dataKids || []).map((d) => d?.id).filter((id) => id != null)
+}
+
 check('兄弟顺序计算 orderedIds=[3,1,2]', () => {
   const parentNode = { childNodes: [{ data: { id: 3 } }, { data: { id: 1 } }, { data: { id: 2 } }] }
-  const orderedIds = (parentNode.childNodes || []).map((n) => n.data.id)
+  const orderedIds = collectSiblingIds(parentNode)
   assert.deepStrictEqual(orderedIds, [3, 1, 2])
   // 与后端全覆盖校验口径一致：given 集合 == sibling 集合
   const siblingSet = new Set([1, 2, 3])
   const given = new Set(orderedIds)
   assert.strictEqual(given.size, siblingSet.size)
   assert.ok([...siblingSet].every((id) => given.has(id)))
+})
+
+// Element Plus 关键行为：drop 后 draggingNode.parent 被置 null，必须用 dropNode.parent
+check('onNodeDrop 必须用 dropNode.parent（draggingNode.parent 已 null）', () => {
+  const sharedParent = {
+    key: null,
+    childNodes: [{ data: { id: 3 } }, { data: { id: 1 } }, { data: { id: 2 } }],
+  }
+  const draggingNode = { parent: null, data: { id: 1 } } // remove() 后 parent 被清空
+  const dropNode = { parent: sharedParent, data: { id: 3 } }
+  // 错误写法：读 draggingNode.parent → 直接跳过保存
+  assert.strictEqual(draggingNode.parent, null, '模拟 EP remove 后 parent=null')
+  // 正确写法：读 dropNode.parent
+  const orderedIds = collectSiblingIds(dropNode.parent)
+  assert.deepStrictEqual(orderedIds, [3, 1, 2])
+})
+
+check('collectSiblingIds 兜底 data 数组（根级）', () => {
+  const rootParent = {
+    key: undefined,
+    childNodes: [],
+    data: [{ id: 9 }, { id: 7 }, { id: 8 }],
+  }
+  assert.deepStrictEqual(collectSiblingIds(rootParent), [9, 7, 8])
 })
 
 // ---- CategoriesView.vue 静态走查 ----
@@ -96,6 +133,16 @@ if (vue) {
     assert.ok(vue.includes('toastError(e)'), '缺少 toastError(e)')
     assert.ok(vue.includes('await refreshCategories()'), '缺少 await refreshCategories()')
     assert.ok(vue.includes('saving.value = false'), '缺少 saving.value = false 复位')
+  })
+  check('静态- onNodeDrop 用 dropNode.parent + collectSiblingIds，避免 draggingNode.parent=null', () => {
+    assert.ok(vue.includes('function collectSiblingIds'), '缺少 collectSiblingIds')
+    assert.ok(
+      /async function onNodeDrop\s*\(\s*draggingNode\s*,\s*dropNode/.test(vue),
+      'onNodeDrop 未接收 dropNode 参数',
+    )
+    assert.ok(vue.includes('const parentNode = dropNode.parent'), '未用 dropNode.parent 读兄弟')
+    assert.ok(!/const parentNode = draggingNode\?\.parent/.test(vue), '仍在用 draggingNode.parent（会永久丢序）')
+    assert.ok(vue.includes('await nextTick()'), '缺少 await nextTick()')
   })
   // 去除 CSS/HTML 注释后再做“遗留组件”检查：
   // 避免设计意图说明（如 CSS 注释里提到 el-table 观感）被当成遗留组件误报。

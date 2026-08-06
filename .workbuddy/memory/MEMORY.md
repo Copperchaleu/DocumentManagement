@@ -27,8 +27,9 @@
 - 分类管理页 `web/src/views/CategoriesView.vue` 由 el-table 重写为 **el-tree**（绑定 `appState.categoryTree`，`node-key=id`），支持拖拽排序。
 - 约束：仅同级（同 parent_id）重排；跨父级/跨层级（type==='inner'）在 `allowDrop` 拦截并节流 `ElMessage.warning`；子树整体随节点移动天然成立。
 - 更新策略：乐观更新——el-tree 就地移动 → 调 reorder；失败 `refreshCategories()` 回滚 + `toastError`（来自 `web/src/api/http.js`）。`saving` 期间 `:draggable=false` 防重入。
-- ⚠️ **`onNodeDrop` 必须 `await nextTick()` 后再读 `draggingNode.parent.childNodes` 组装 `ordered_ids`**：否则节点移动未完成就读到不全/错的兄弟顺序 → 后端全覆盖校验失败 400 → 前端 `catch` 回滚 → **排序永远落不了库**（典型「拖了没保存」根因）。组装用 `.map(n=>n.data?.id).filter(Boolean)`，`if(orderedIds.length<2) return`，成功后 `await refreshCategories()` 同步状态。
-- 新建分类插最前：`database.create_category` 的 `sort_order is _UNSET` 分支 = 置 0 + 同级其余 `sort_order+1`（parent_id None 用 `WHERE parent_id IS NULL`）。已修「新建打乱顺序」。
-- 后端：`POST /api/categories/reorder`，body `{parent_id:int|null, ordered_ids:[int]}`（须覆盖该父级全部兄弟）；`database.reorder_siblings` 单事务 + 4 项校验（空/重复/同父/全覆盖），非法抛 ValueError→400 且事务回滚不改 sort_order。`categories.sort_order` 列现被正式写入启用。
-- `CategoryUpdate`/`CategoryCreate` 已增 `sort_order` 可选字段；`PUT /api/categories/{id}` 透传。
-- 设计文档：`docs/design_category_reorder.md`；测试：`qa/backend_reorder_test.py`、`qa/frontend_reorder_test.mjs`（31/31 PASS）。
+- ⚠️ **真正根因（2026-08-06 修）**：Element Plus 在 `node-drop` 前对 `draggingNode` 执行 `remove()`，把 `draggingNode.parent` 置 `null`。旧代码读 `draggingNode.parent` → 直接 return → **reorder 永远不发**。正确写法：`onNodeDrop(draggingNode, dropNode, dropType)` 用 **`dropNode.parent`** + `collectSiblingIds`（优先 `childNodes`，兜底 `data`/`children`），`await nextTick()` 后再组装 `ordered_ids`。`dropType==='none'|'inner'` 直接忽略。
+- 成功/失败后都 `await refreshCategories()` 同步 `appState.categoryTree`；`saving` 期间 `:draggable=false` 防重入。
+- 新建分类插最前：`database.create_category` 的 `sort_order is _UNSET` 分支 = 置 0 + 同级其余 `sort_order+1`（parent_id None 用 `WHERE parent_id IS NULL`）。
+- `get_category_tree()` 在组装后显式按 `sort_order, name` 排兄弟序（防御 flat 遍历顺序变化）。
+- 后端：`POST /api/categories/reorder`，body `{parent_id:int|null, ordered_ids:[int]}`（须覆盖该父级全部兄弟）；`database.reorder_siblings` 单事务 + 4 项校验（空/重复/同父/全覆盖），非法抛 ValueError→400 且事务回滚不改 sort_order。
+- 设计文档：`docs/design_category_reorder.md`；测试：`qa/backend_reorder_test.py`（24 PASS）、`qa/frontend_reorder_test.mjs`（13 PASS）。

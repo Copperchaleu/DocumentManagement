@@ -125,20 +125,45 @@ function onDragEnd() {
 }
 
 /**
+ * 从父节点收集兄弟 id 顺序（优先 el-tree childNodes，兜底 data 数组）。
+ * 注意：node-drop 触发时，Element Plus 已对 draggingNode 执行 remove()，
+ * 其 parent 被置 null；必须用 dropNode.parent 读新顺序，否则永远不会落库。
+ */
+function collectSiblingIds(parentNode) {
+  if (!parentNode) return []
+  const fromNodes = (parentNode.childNodes || [])
+    .map((n) => n.data?.id)
+    .filter((id) => id != null)
+  if (fromNodes.length) return fromNodes
+  // 兜底：insertChild 会同步改 data 数组（根级 data 是整棵树数组）
+  const dataKids = Array.isArray(parentNode.data)
+    ? parentNode.data
+    : parentNode.data?.children
+  return (dataKids || []).map((d) => d?.id).filter((id) => id != null)
+}
+
+/**
  * 松手于合法位置：el-tree 已就地移动节点（子树整体随动，乐观更新）。
  * 读取新兄弟顺序 → 调用 reorder；失败则提示并 refreshCategories() 回滚。
+ *
+ * Element Plus 签名：@node-drop(draggingNode, dropNode, dropType, event)
+ * dropType 为 before | after | inner | none（与 allow-drop 的 prev/next/inner 不同）。
  */
-async function onNodeDrop(draggingNode) {
+async function onNodeDrop(draggingNode, dropNode, dropType) {
   if (saving.value) return
-  // 等 el-tree 内部完成节点移动，确保接下来读到的兄弟顺序是最新的（修复 childNodes 时序问题）
+  // 非法/无效落点：不应保存（allow-drop 通常已拦截，此处再兜底）
+  if (!dropNode || dropType === 'none' || dropType === 'inner') return
+
+  // 等 el-tree 内部完成节点移动，确保接下来读到的兄弟顺序是最新的
   await nextTick()
-  const parentNode = draggingNode?.parent
+
+  // 关键：draggingNode 已被 remove，parent===null；新位置挂在 dropNode 的同一父级下
+  const parentNode = dropNode.parent
   if (!parentNode) return
   const parentKey = parentNode.key ?? null
-  const orderedIds = (parentNode.childNodes || [])
-    .map((n) => n.data?.id)
-    .filter(Boolean)
+  const orderedIds = collectSiblingIds(parentNode)
   if (orderedIds.length < 2) return // 单个或无子节点无需排序
+
   saving.value = true
   try {
     await reorderCategories({ parent_id: parentKey, ordered_ids: orderedIds })
