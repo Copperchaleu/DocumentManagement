@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Folder,
@@ -130,20 +130,24 @@ function onDragEnd() {
  */
 async function onNodeDrop(draggingNode) {
   if (saving.value) return
+  // 等 el-tree 内部完成节点移动，确保接下来读到的兄弟顺序是最新的（修复 childNodes 时序问题）
+  await nextTick()
   const parentNode = draggingNode?.parent
   if (!parentNode) return
-
-  const parentKey = parentNode.key ?? null // 根级 → null
-  const orderedIds = (parentNode.childNodes || []).map((n) => n.data.id)
-  if (!orderedIds.length) return
-
-  saving.value = true // 禁用拖拽，防重入
+  const parentKey = parentNode.key ?? null
+  const orderedIds = (parentNode.childNodes || [])
+    .map((n) => n.data?.id)
+    .filter(Boolean)
+  if (orderedIds.length < 2) return // 单个或无子节点无需排序
+  saving.value = true
   try {
     await reorderCategories({ parent_id: parentKey, ordered_ids: orderedIds })
-    // 成功：el-tree 已就地更新 appState.categoryTree，本地顺序即定稿（不刷新）
+    // 成功后主动同步 appState.categoryTree 到后端真实顺序，
+    // 消除"el-tree 乐观更新 vs 前端状态"的脱节，确保后续新建/刷新顺序一致
+    await refreshCategories()
   } catch (e) {
-    toastError(e) // 显示后端 detail 原因
-    await refreshCategories() // 回滚到服务端顺序
+    toastError(e)
+    await refreshCategories() // 失败回滚到服务端顺序
   } finally {
     saving.value = false
     draggingId.value = null
