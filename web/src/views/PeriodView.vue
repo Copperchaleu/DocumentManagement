@@ -88,15 +88,6 @@ function toggleRow(row) {
   selectedIds.value = next
 }
 
-// 全选（全部文件，不局限于筛选结果）
-function selectAll() {
-  const next = new Set()
-  for (const r of appState.periodFiles || []) {
-    next.add(r.id)
-  }
-  selectedIds.value = next
-}
-
 // 筛选后的全选（仅当前筛选结果）
 function selectFilteredAll() {
   const next = new Set(selectedIds.value)
@@ -104,11 +95,6 @@ function selectFilteredAll() {
     next.add(r.id)
   }
   selectedIds.value = next
-}
-
-// 清空所有选中
-function clearSelection() {
-  selectedIds.value = new Set()
 }
 
 // 已选数量
@@ -291,14 +277,6 @@ async function onCopyPaths() {
 <template>
   <div class="panel period-panel">
     <div class="panel-head">
-      <div class="title-area">
-        <div class="title-row">
-          <el-tag size="small" effect="plain" round type="info">
-            {{ filteredPeriodFiles.length }} 个
-          </el-tag>
-        </div>
-      </div>
-
       <div class="toolbar-row filter-row">
         <el-cascader
           v-model="catFilterPath"
@@ -348,9 +326,6 @@ async function onCopyPaths() {
         </el-button>
 
         <el-divider direction="vertical" />
-        <el-button @click="selectAll">全选</el-button>
-        <el-button @click="selectFilteredAll">筛选后全选</el-button>
-        <el-button @click="clearSelection" :disabled="selectedCount === 0">清空所选</el-button>
         <el-button type="primary" @click="onCopyPaths" :disabled="selectedCount === 0">
           复制路径（{{ selectedCount }}）
         </el-button>
