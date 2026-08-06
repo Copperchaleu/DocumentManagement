@@ -505,6 +505,93 @@ class Database:
                 it["is_leaf"] = int(it.get("child_count") or 0) == 0
             return items
 
+    def category_breakdown(self, parent_id: Optional[int] = None) -> list[dict[str, Any]]:
+        """返回 parent_id 下的直接子分类列表，每项含子树（含自身与后代）saved 项目总数。
+
+        parent_id 为 None 时返回根级分类。
+        """
+        flat = self.list_categories_flat()
+        # list_categories_flat 已返回每项的: id, parent_id, name, sort_order,
+        #   child_count(直接子分类数), project_count(直接归属且 status!='draft' 的项目数), is_leaf
+        by_id = {c["id"]: c for c in flat}
+        children_map: dict = {}
+        for c in flat:
+            children_map.setdefault(c.get("parent_id"), []).append(c["id"])
+        memo: dict = {}
+
+        def subtree_total(cid: int) -> int:
+            if cid in memo:
+                return memo[cid]
+            node = by_id[cid]
+            total = int(node.get("project_count") or 0)
+            for ch in children_map.get(cid, []):
+                total += subtree_total(ch)
+            memo[cid] = total
+            return total
+
+        result: list[dict[str, Any]] = []
+        for c in flat:
+            if c.get("parent_id") == parent_id:  # None == None 命中根级
+                result.append(
+                    {
+                        "id": c["id"],
+                        "name": c["name"],
+                        "parent_id": c.get("parent_id"),
+                        "sort_order": int(c.get("sort_order") or 0),
+                        "has_children": int(c.get("child_count") or 0) > 0,
+                        "project_total": subtree_total(c["id"]),
+                    }
+                )
+        result.sort(key=lambda x: (x["sort_order"], x["name"].lower()))
+        return result
+
+    def category_tree(self) -> list[dict[str, Any]]:
+        """顶级分类树：每个顶级含其【直接子分类】及各自子树 project_total。
+
+        返回: [{id, name, project_total, children:[{id, name, project_total}]}]
+        顶级 = parent_id 为 None；空库/无分类返回 []。
+        """
+        flat = self.list_categories_flat()          # 复用现有扁平表
+        by_id = {c["id"]: c for c in flat}
+        children_map: dict = {}
+        for c in flat:
+            children_map.setdefault(c.get("parent_id"), []).append(c["id"])
+        memo: dict = {}
+
+        def subtree_total(cid: int) -> int:         # 后序聚合，记忆化
+            if cid in memo:
+                return memo[cid]
+            node = by_id[cid]
+            total = int(node.get("project_count") or 0)
+            for ch in children_map.get(cid, []):
+                total += subtree_total(ch)
+            memo[cid] = total
+            return total
+
+        def sort_key(x):
+            return (x.get("sort_order") or 0, (x.get("name") or "").lower())
+
+        result: list[dict[str, Any]] = []
+        for top in sorted([x for x in flat if x.get("parent_id") is None], key=sort_key):
+            child_ids = children_map.get(top["id"], [])
+            children = [
+                {
+                    "id": ch["id"],
+                    "name": ch["name"],
+                    "project_total": subtree_total(ch["id"]),
+                }
+                for ch in sorted([by_id[cid] for cid in child_ids], key=sort_key)
+            ]
+            result.append(
+                {
+                    "id": top["id"],
+                    "name": top["name"],
+                    "project_total": subtree_total(top["id"]),
+                    "children": children,
+                }
+            )
+        return result
+
     def get_category_tree(self) -> list[dict[str, Any]]:
         flat = self.list_categories_flat()
         by_id: dict[int, dict[str, Any]] = {}
@@ -562,10 +649,25 @@ class Database:
         path: str = "",
         description: str = "",
         parent_id: Optional[int] = None,
-        sort_order: int = 0,
+        sort_order: Any = _UNSET,
     ) -> dict[str, Any]:
         now = self._now()
         with self.connect() as conn:
+            # 未显式传 sort_order 时，插入到该父级兄弟的最前（置 0，其余 +1）。
+            if sort_order is _UNSET:
+                sort_order = 0
+                if parent_id is None:
+                    conn.execute(
+                        "UPDATE categories SET sort_order = sort_order + 1 "
+                        "WHERE parent_id IS NULL"
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE categories SET sort_order = sort_order + 1 "
+                        "WHERE parent_id = ?",
+                        (parent_id,),
+                    )
+
             # 同级名称不可重复
             if parent_id is None:
                 exists = conn.execute(
@@ -1589,6 +1691,36 @@ class Database:
         counts = {r["q"]: int(r["cnt"]) for r in rows}
         result: list[tuple[str, int]] = []
         for (_year, _quarter, label) in list_recent_quarters(quarters):
+            result.append((label, counts.get(label, 0)))
+        return result
+
+    def project_weekly_counts(self, weeks: int = 12) -> list[tuple[str, int]]:
+        """最近 weeks 周每周新增（status='saved'），按 ISO 周聚合。
+
+        返回 [(label 'YYYY-Www', count), ...] 按周升序，无数据补 0。
+        """
+        from .path_utils import list_recent_weeks
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS cnt
+                FROM projects
+                WHERE status = 'saved'
+                GROUP BY day
+                """
+            ).fetchall()
+        counts: dict[str, int] = {}
+        for r in rows:
+            try:
+                d = datetime.strptime(r["day"], "%Y-%m-%d")
+            except (ValueError, TypeError):
+                continue
+            iso = d.isocalendar()               # 同一 ISO 周内任一天 iso 年/周相同
+            label = f"{iso.year}-W{iso.week:02d}"
+            counts[label] = counts.get(label, 0) + int(r["cnt"])
+        result: list[tuple[str, int]] = []
+        for (_year, _week, label) in list_recent_weeks(weeks):
             result.append((label, counts.get(label, 0)))
         return result
 

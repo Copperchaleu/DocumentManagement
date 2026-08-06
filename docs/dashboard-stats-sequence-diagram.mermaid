@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant U as 用户
+    participant DP as DashboardPanel
+    participant API as ApiClient
+    participant S as FastAPI
+    participant DB as Database
+
+    Note over DP: onMounted → refresh() → loadStats()
+    par 概览（后端接口不变）
+        DP->>API: getProjectStatsSummary()
+        API->>S: GET /api/stats/projects-summary
+        S->>DB: count_saved_projects_period()
+        DB-->>S: {today, month, quarter}
+        S-->>API: JSON
+        API-->>DP: summary
+    and 趋势（强制折线）
+        DP->>API: getProjectStatsTrend(range)
+        API->>S: GET /api/stats/projects-trend?range
+        S->>DB: project_*_counts()
+        S-->>API: {range, labels, values}
+        API-->>DP: trend
+        DP->>DP: TrendChart 恒走折线+面积渲染（无柱状分支）
+    and 分类统计（根级）
+        DP->>API: getCategoryBreakdown(null)
+        API->>S: GET /api/stats/category-breakdown
+        S->>DB: category_breakdown(None)
+        DB->>DB: list_categories_flat() → children_map 后序聚合
+        DB-->>S: 根级直接子分类列表
+        S-->>API: JSON 数组
+        API-->>DP: catRows
+    end
+
+    Note over U,DP: 点击 has_children 行 → 下钻
+    U->>DP: 点击某分类行
+    DP->>DP: drillDown(row): catPath.push, catParentId=row.id
+    DP->>API: getCategoryBreakdown(row.id)
+    API->>S: GET /api/stats/category-breakdown?parent_id=row.id
+    S->>DB: category_breakdown(row.id)
+    DB-->>S: 直接子分类列表
+    S-->>API: JSON 数组
+    API-->>DP: catRows(子级)
+
+    Note over U,DP: 返回上一级 / 回到顶级
+    U->>DP: 点击「返回上一级」
+    DP->>DP: goUp(): catPath.pop(), catParentId=上级
+    DP->>API: getCategoryBreakdown(catParentId)
+    API-->>DP: catRows(上级)
+    U->>DP: 点击「回到顶级」
+    DP->>DP: goTop(): catPath=[], catParentId=null
+    DP->>API: getCategoryBreakdown(null)
+    API-->>DP: catRows(根级)

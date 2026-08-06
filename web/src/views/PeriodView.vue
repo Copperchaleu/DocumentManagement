@@ -97,8 +97,10 @@ function selectFilteredAll() {
   selectedIds.value = next
 }
 
-// 已选数量
-const selectedCount = computed(() => selectedIds.value.size)
+// 已选数量（仅统计当前筛选结果中已选中的条目，而非筛选前的全部已选）
+const selectedCount = computed(
+  () => filteredPeriodFiles.value.filter((r) => selectedIds.value.has(r.id)).length,
+)
 
 // 当前筛选结果是否全部选中（用于表头复选框状态）
 const allFilteredSelected = computed(
@@ -120,9 +122,9 @@ function toggleFilteredAll(val) {
   }
 }
 
-// 已选中的完整行（用于复制路径）
+// 已选中的完整行（基于筛选后的数据集，用于复制路径，排除不在当前筛选结果内的已选条目）
 const selectedRows = computed(() =>
-  (appState.periodFiles || []).filter((r) => selectedIds.value.has(r.id)),
+  filteredPeriodFiles.value.filter((r) => selectedIds.value.has(r.id)),
 )
 
 // 根据所选日期反推其所属周/月/季度标签，与后端 path_utils 的 ISO 周规则一致
@@ -282,6 +284,9 @@ async function onCopyPaths() {
           v-model="catFilterPath"
           :options="categoryCascaderOptions"
           :props="categoryCascaderProps"
+          popper-class="cat-cascader-popper"
+          placement="bottom-start"
+          :popper-options="{ modifiers: [{ name: 'flip', enabled: false }] }"
           clearable
           filterable
           class="filter-control"

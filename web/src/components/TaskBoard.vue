@@ -78,14 +78,6 @@ const selectedDayTasks = computed(() =>
   tasks.value.filter((task) => task.dueDate === selectedDate.value).sort(compareTasks),
 )
 
-const upcomingReminders = computed(() => {
-  const now = Date.now()
-  return tasks.value
-    .filter((task) => task.reminderAt && !isCompleted(task) && new Date(task.reminderAt).getTime() >= now)
-    .sort((a, b) => new Date(a.reminderAt) - new Date(b.reminderAt))
-    .slice(0, 4)
-})
-
 const calendarTitle = computed(
   () => `${calendarCursor.value.getFullYear()} 年 ${calendarCursor.value.getMonth() + 1} 月`,
 )
@@ -436,6 +428,44 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
     </section>
 
     <div class="workbench-grid">
+      <section class="workbench-card calendar-card">
+        <header class="calendar-head">
+          <div>
+            <span class="section-kicker">CALENDAR</span>
+            <h2>{{ calendarTitle }}</h2>
+          </div>
+          <div class="calendar-nav">
+            <button type="button" aria-label="上个月" @click="changeMonth(-1)">‹</button>
+            <button type="button" @click="jumpToday">今</button>
+            <button type="button" aria-label="下个月" @click="changeMonth(1)">›</button>
+          </div>
+        </header>
+        <div class="calendar-weekdays"><span v-for="day in WEEKDAYS" :key="day">{{ day }}</span></div>
+        <div class="calendar-grid">
+          <button
+            v-for="day in calendarDays"
+            :key="day.key"
+            type="button"
+            :class="{ muted: !day.currentMonth, today: day.isToday, selected: day.isSelected, busy: day.taskCount, urgent: day.hasHigh }"
+            @click="selectCalendarDay(day)"
+          >
+            <span>{{ day.day }}</span>
+            <i v-if="day.taskCount">{{ day.completed }}/{{ day.taskCount }}</i>
+          </button>
+        </div>
+        <div class="day-agenda">
+          <div class="agenda-head">
+            <b>今日截止 {{ todayCount }}</b>
+            <el-button link type="primary" :icon="Plus" @click="openCreate(selectedDate)">添加</el-button>
+          </div>
+          <button v-for="task in selectedDayTasks.slice(0, 3)" :key="task.id" type="button" class="agenda-item" @click="openEdit(task)">
+            <i :style="{ background: priorities[task.priority]?.color }" />
+            <span :class="{ done: isCompleted(task) }">{{ task.title }}</span>
+            <time>{{ task.dueTime || '全天' }}</time>
+          </button>
+        </div>
+      </section>
+
       <section class="workbench-card task-board" v-loading="loading" element-loading-text="加载待办…">
         <header class="workbench-card-head">
           <el-input v-model="keyword" class="task-search" clearable :prefix-icon="Search" placeholder="搜索待办…" />
@@ -498,63 +528,6 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
           <el-button v-if="!keyword" type="primary" plain :icon="Plus" @click="openCreate()">添加待办</el-button>
         </div>
       </section>
-
-      <aside class="workbench-side">
-        <section class="workbench-card calendar-card">
-          <header class="calendar-head">
-            <div>
-              <span class="section-kicker">CALENDAR</span>
-              <h2>{{ calendarTitle }}</h2>
-            </div>
-            <div class="calendar-nav">
-              <button type="button" aria-label="上个月" @click="changeMonth(-1)">‹</button>
-              <button type="button" @click="jumpToday">今</button>
-              <button type="button" aria-label="下个月" @click="changeMonth(1)">›</button>
-            </div>
-          </header>
-          <div class="calendar-weekdays"><span v-for="day in WEEKDAYS" :key="day">{{ day }}</span></div>
-          <div class="calendar-grid">
-            <button
-              v-for="day in calendarDays"
-              :key="day.key"
-              type="button"
-              :class="{ muted: !day.currentMonth, today: day.isToday, selected: day.isSelected, busy: day.taskCount, urgent: day.hasHigh }"
-              @click="selectCalendarDay(day)"
-            >
-              <span>{{ day.day }}</span>
-              <i v-if="day.taskCount">{{ day.completed }}/{{ day.taskCount }}</i>
-            </button>
-          </div>
-          <div class="day-agenda">
-            <div class="agenda-head">
-              <div><b>{{ formatDate(selectedDate, true) }}</b><span>{{ selectedDayTasks.length }} 项安排</span></div>
-              <el-button link type="primary" :icon="Plus" @click="openCreate(selectedDate)">添加</el-button>
-            </div>
-            <button v-for="task in selectedDayTasks.slice(0, 3)" :key="task.id" type="button" class="agenda-item" @click="openEdit(task)">
-              <i :style="{ background: priorities[task.priority]?.color }" />
-              <span :class="{ done: isCompleted(task) }">{{ task.title }}</span>
-              <time>{{ task.dueTime || '全天' }}</time>
-            </button>
-            <div v-if="!selectedDayTasks.length" class="agenda-empty">这一天还没有安排</div>
-          </div>
-        </section>
-
-        <section class="workbench-card reminder-card">
-          <header>
-            <div class="reminder-title"><span><Bell /></span><div><b>提醒中心</b><small>临近事项，及时处理</small></div></div>
-            <el-tag size="small" effect="plain" round>{{ upcomingReminders.length }}</el-tag>
-          </header>
-          <div v-if="upcomingReminders.length" class="reminder-list">
-            <button v-for="task in upcomingReminders" :key="task.id" type="button" @click="openEdit(task)">
-              <span>{{ formatReminder(task.reminderAt) }}</span><b>{{ task.title }}</b>
-            </button>
-          </div>
-          <div v-else class="reminder-empty">暂无即将触发的提醒</div>
-          <button v-if="permissionState !== 'granted' && permissionState !== 'unsupported'" type="button" class="notification-link" @click="requestNotificationPermission">
-            开启桌面通知，让提醒更及时 →
-          </button>
-        </section>
-      </aside>
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑待办' : '新建待办'" width="560px" destroy-on-close append-to-body class="task-dialog">
@@ -608,10 +581,9 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
 .metric-icon { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 8px; border-radius: 9px; }
 .metric-icon svg { width: 16px; }
 .metric-indigo .metric-icon { color: #4f46e5; background: #eef2ff; }.metric-amber .metric-icon { color: #d97706; background: #fffbeb; }.metric-emerald .metric-icon { color: #059669; background: #ecfdf5; }.metric-rose .metric-icon { color: #dc2626; background: #fff1f2; }
-.workbench-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, .82fr); gap: 16px; align-items: start; }
-.workbench-side { display: grid; gap: 16px; }
+.workbench-grid { display: grid; grid-template-columns: minmax(0, .82fr) minmax(0, 1.65fr); gap: 16px; align-items: start; }
 .workbench-card { border: 1px solid #dde5ef; border-radius: 19px; background: rgba(255,255,255,.96); box-shadow: 0 10px 30px rgba(15, 23, 42, .055); }
-.task-board { min-height: 540px; padding: 21px; }
+.task-board { padding: 21px; }
 .workbench-card-head,.calendar-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .workbench-card h2 { margin: 3px 0 0; color: #172554; font-size: 19px; letter-spacing: -.02em; }
 .task-search { width: 100%; max-width: 240px; }
@@ -629,27 +601,23 @@ defineExpose({ createTaskToday, enableNotifications, permissionState })
 .task-detail-meta { display: flex; align-items: center; gap: 10px; overflow: hidden; color: #94a3b8; font-size: 9px; white-space: nowrap; }.priority-label,.reminder-label { display: inline-flex; align-items: center; gap: 4px; }.priority-label::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--priority-color); }.reminder-label { overflow: hidden; text-overflow: ellipsis; }.reminder-label svg { width: 10px; flex-shrink: 0; }
 .task-actions { display: flex; gap: 5px; }.task-actions :deep(.el-button + .el-button) { margin-left: 0; }.task-actions :deep(.el-button) { width: 30px; height: 30px; min-height: 30px; }
 .task-empty { display: grid; justify-items: center; padding: 82px 20px; text-align: center; }.empty-illustration { display: grid; place-items: center; width: 66px; height: 66px; border-radius: 22px; background: linear-gradient(135deg,#eef2ff,#e0e7ff); color: #6366f1; transform: rotate(-5deg); }.empty-illustration svg { width: 28px; }.task-empty h3 { margin: 20px 0 6px; font-size: 16px; color: #334155; }.task-empty p { margin: 0 0 18px; color: #94a3b8; font-size: 12px; }
-.calendar-card { padding: 18px 20px; }.calendar-nav { display: flex; gap: 4px; }.calendar-nav button { width: 26px; height: 26px; padding: 0; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; color: #475569; font-size: 16px; line-height: 1; cursor: pointer; }.calendar-nav button:nth-child(2) { font-size: 10px; font-weight: 700; }.calendar-nav button:hover { color: #4338ca; border-color: #a5b4fc; background: #eef2ff; }
+.calendar-card { padding: 18px 20px; }
+.calendar-card h2 { margin: 0; font-size: 14px; height: 26px; line-height: 26px; white-space: nowrap; }
+.calendar-nav { display: flex; gap: 4px; }.calendar-nav button { width: 26px; height: 26px; padding: 0; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; color: #475569; font-size: 16px; line-height: 1; cursor: pointer; }.calendar-nav button:nth-child(2) { font-size: 10px; font-weight: 700; }.calendar-nav button:hover { color: #4338ca; border-color: #a5b4fc; background: #eef2ff; }
 .calendar-weekdays,.calendar-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 2px; }.calendar-weekdays { margin: 13px 0 5px; color: #94a3b8; font-size: 10px; font-weight: 700; text-align: center; }
 .calendar-grid button { position: relative; display: grid; justify-items: center; align-content: center; gap: 1px; height: 32px; min-width: 0; padding: 1px; border: 0; border-radius: 8px; background: transparent; color: #334155; font: inherit; font-size: 11px; cursor: pointer; }.calendar-grid button:hover { background: #f1f5f9; }.calendar-grid button.muted { color: #cbd5e1; }.calendar-grid button.today span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; color: #4338ca; background: #eef2ff; font-weight: 800; }.calendar-grid button.selected { color: #fff; background: #4338ca; box-shadow: 0 4px 9px rgba(67,56,202,.23); }.calendar-grid button.selected span { color: #fff; background: transparent; }.calendar-grid button i { color: #818cf8; font-size: 7px; font-style: normal; line-height: 1; }.calendar-grid button.selected i { color: #c7d2fe; }.calendar-grid button.urgent::after { content: ''; position: absolute; top: 3px; right: 3px; width: 4px; height: 4px; border-radius: 50%; background: #ef4444; }
-.day-agenda { margin-top: 12px; padding-top: 11px; border-top: 1px solid #edf2f7; }.agenda-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }.agenda-head > div { display: grid; }.agenda-head b { color: #334155; font-size: 12px; }.agenda-head span { color: #94a3b8; font-size: 10px; }.agenda-head :deep(.el-button) { min-height: 26px; }
-.agenda-item { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center; gap: 8px; width: 100%; padding: 8px 5px; border: 0; border-radius: 7px; background: transparent; color: #475569; text-align: left; cursor: pointer; }.agenda-item:hover { background: #f8fafc; }.agenda-item i { width: 6px; height: 6px; border-radius: 50%; }.agenda-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }.agenda-item .done { text-decoration: line-through; color: #94a3b8; }.agenda-item time { color: #94a3b8; font-size: 10px; }.agenda-empty { padding: 11px 0 4px; color: #94a3b8; font-size: 11px; text-align: center; }
-.reminder-card { overflow: hidden; padding: 19px 20px; background: linear-gradient(145deg,#172554,#1e1b4b); color: #fff; }.reminder-card > header { display: flex; align-items: center; justify-content: space-between; }.reminder-title { display: flex; align-items: center; gap: 10px; }.reminder-title > span { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; background: rgba(165,180,252,.16); color: #c7d2fe; }.reminder-title svg { width: 16px; }.reminder-title div { display: grid; }.reminder-title b { font-size: 13px; }.reminder-title small { margin-top: 2px; color: #a5b4fc; font-size: 10px; }.reminder-list { display: grid; gap: 5px; margin-top: 13px; }.reminder-list button { display: grid; grid-template-columns: 80px minmax(0,1fr); gap: 8px; width: 100%; padding: 8px 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: rgba(255,255,255,.06); color: #e0e7ff; text-align: left; cursor: pointer; }.reminder-list button:hover { background: rgba(255,255,255,.1); }.reminder-list span { color: #a5b4fc; font-size: 10px; }.reminder-list b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }.reminder-empty { padding: 18px 0 7px; color: #a5b4fc; font-size: 11px; text-align: center; }.notification-link { width: 100%; margin-top: 11px; padding: 7px; border: 0; border-top: 1px solid rgba(255,255,255,.09); background: transparent; color: #c7d2fe; font-size: 10px; cursor: pointer; }
+.day-agenda { margin-top: 12px; padding-top: 11px; border-top: 1px solid #edf2f7; }.agenda-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }.agenda-head b { color: #334155; font-size: 12px; }.agenda-head :deep(.el-button) { min-height: 26px; }
+.agenda-item { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center; gap: 8px; width: 100%; padding: 8px 5px; border: 0; border-radius: 7px; background: transparent; color: #475569; text-align: left; cursor: pointer; }.agenda-item:hover { background: #f8fafc; }.agenda-item i { width: 6px; height: 6px; border-radius: 50%; }.agenda-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }.agenda-item .done { text-decoration: line-through; color: #94a3b8; }.agenda-item time { color: #94a3b8; font-size: 10px; }
 .dialog-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 12px; }.reminder-setting { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; padding: 13px 14px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; }.reminder-setting.enabled { border-color: #c7d2fe; background: #eef2ff; }.reminder-setting-copy { display: flex; align-items: center; gap: 10px; }.reminder-setting-copy > span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: #fff; color: #4f46e5; }.reminder-setting-copy svg { width: 15px; }.reminder-setting-copy div { display: grid; }.reminder-setting-copy b { color: #334155; font-size: 12px; }.reminder-setting-copy small { color: #94a3b8; font-size: 10px; }.reminder-time-field { margin-top: 15px; }
-@media (max-width: 1180px) { .metric-grid { grid-template-columns: repeat(2,1fr); }.workbench-grid { grid-template-columns: minmax(0,1fr) 320px; } }
-@media (max-width: 850px) { .workbench-grid { grid-template-columns: 1fr; }.task-board { min-height: 480px; }.workbench-side { grid-template-columns: minmax(310px,1fr) minmax(260px,.8fr); } }
-@media (max-width: 620px) { .metric-grid { grid-template-columns: 1fr 1fr; }.metric-card { min-height: 94px; padding: 13px; }.workbench-side { grid-template-columns: 1fr; }.workbench-card-head { align-items: stretch; flex-direction: column; }.task-search { width: 100%; }.task-board { padding: 17px; }.task-filter-row { overflow-x: auto; }.task-filter-row button { flex: 0 0 auto; }.task-item { grid-template-columns: minmax(0,1fr) auto; gap: 8px 10px; }.task-details { grid-column: 1 / -1; grid-row: 2; padding: 7px 0 0 32px; border-top: 1px solid #edf2f7; border-left: 0; }.task-actions { grid-column: 2; grid-row: 1; }.dialog-form-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1180px) { .workbench-grid { grid-template-columns: 320px minmax(0,1fr); } }
+@media (max-width: 850px) { .workbench-grid { grid-template-columns: 1fr; }.task-board { min-height: 480px; } }
+@media (max-width: 620px) { .metric-card { min-height: 94px; padding: 13px; }.workbench-card-head { align-items: stretch; flex-direction: column; }.task-search { width: 100%; }.task-board { padding: 17px; }.task-filter-row { overflow-x: auto; }.task-filter-row button { flex: 0 0 auto; }.task-item { grid-template-columns: minmax(0,1fr) auto; gap: 8px 10px; }.task-details { grid-column: 1 / -1; grid-row: 2; padding: 7px 0 0 32px; border-top: 1px solid #edf2f7; border-left: 0; }.task-actions { grid-column: 2; grid-row: 1; }.dialog-form-grid { grid-template-columns: 1fr; } }
 
-/* 容器查询：组件被放入较窄的列时（列宽 ≤ 620px），内部两栏堆叠为单列、
-   4 张统计卡降为 2×2，保证日历/提醒移至列表下方且不丢失功能。
+/* 容器查询：组件被放入较窄的列时（列宽 ≤ 620px），内部两栏堆叠为单列，
+   4 张统计卡始终保持 4 列横排。日历移至列表上方且不丢失功能。
    视口较宽但单栏较窄时视口媒体查询不会触发，因此以容器查询为准。 */
 @container (max-width: 620px) {
-  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workbench-grid { grid-template-columns: 1fr; }
-  .workbench-side { grid-template-columns: 1fr; }
   .task-board { min-height: auto; }
-}
-@container (max-width: 420px) {
-  .metric-grid { grid-template-columns: 1fr; }
 }
 </style>

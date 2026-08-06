@@ -1930,6 +1930,8 @@ def stats_projects_trend(range: str = "day") -> ProjectStatsTrend:
         rows = db.project_monthly_counts(6)
     elif range == "quarter":
         rows = db.project_quarterly_counts(8)
+    elif range == "week":
+        rows = db.project_weekly_counts(12)
     else:
         range = "day"
         rows = db.project_daily_counts(14)
@@ -1937,6 +1939,73 @@ def stats_projects_trend(range: str = "day") -> ProjectStatsTrend:
         range=range,
         labels=[r[0] for r in rows],
         values=[int(r[1]) for r in rows],
+    )
+
+
+class CategoryBreakdownItem(BaseModel):
+    """按分类统计的单条（某分类及其子树 saved 项目总数）。"""
+
+    id: int
+    name: str
+    parent_id: Optional[int] = None
+    sort_order: int = 0
+    has_children: bool = False
+    project_total: int = 0
+
+
+class CategoryBreakdownResponse(BaseModel):
+    """按分类统计返回：parent_id 下直接子分类列表。"""
+
+    items: list[CategoryBreakdownItem]
+
+
+@app.get("/api/stats/category-breakdown", response_model=CategoryBreakdownResponse)
+def stats_category_breakdown(parent_id: Optional[int] = None) -> CategoryBreakdownResponse:
+    """按 parent_id 返回直接子分类列表（parent_id 为 None 时返回根级）。
+
+    每项 project_total 为该分类及其所有后代下 status!='draft' 的项目总数。
+    """
+    rows = db.category_breakdown(parent_id)
+    return CategoryBreakdownResponse(items=[CategoryBreakdownItem(**r) for r in rows])
+
+
+class CategoryTreeChild(BaseModel):
+    """顶级分类下的直接子分类（含其子树总数）。"""
+
+    id: int
+    name: str
+    project_total: int = 0
+
+
+class CategoryTreeItem(BaseModel):
+    """顶级分类：含直接子分类列表。"""
+
+    id: int
+    name: str
+    project_total: int = 0
+    children: list[CategoryTreeChild] = []
+
+
+class CategoryTreeResponse(BaseModel):
+    """分类层级结构：顶级分类列表。"""
+
+    items: list[CategoryTreeItem] = []
+
+
+@app.get("/api/stats/category-tree", response_model=CategoryTreeResponse)
+def stats_category_tree() -> CategoryTreeResponse:
+    """返回顶级分类及其直接子分类层级（project_total = 各自子树总数）。"""
+    rows = db.category_tree()
+    return CategoryTreeResponse(
+        items=[
+            CategoryTreeItem(
+                id=r["id"],
+                name=r["name"],
+                project_total=r["project_total"],
+                children=[CategoryTreeChild(**c) for c in r["children"]],
+            )
+            for r in rows
+        ]
     )
 
 

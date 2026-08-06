@@ -1,0 +1,31 @@
+sequenceDiagram
+    actor U as 用户
+    participant DP as DashboardPanel.vue
+    participant TT as TrendChart.vue
+    participant CT as CategoryTreemap.vue
+    participant API as api/index.js
+    participant S as main.py (StatsRouter)
+    participant DB as database.py
+
+    Note over U,DB: ① 周趋势（range=week）
+    U->>DP: changeRange('week')
+    DP->>API: getProjectStatsTrend('week')
+    API->>S: GET /api/stats/projects-trend?range=week
+    S->>DB: project_weekly_counts(12)
+    DB-->>S: [(YYYY-Www, cnt), ...] 升序补0
+    S-->>API: ProjectStatsTrend(range,labels,values)
+    API-->>DP: {range,labels,values}
+    DP->>TT: :labels :values :active-range
+    TT-->>U: 渲染折线 + 周标签抽稀
+
+    Note over U,DB: ② 分类多级 treemap
+    U->>DP: 切到看板 Tab (onMounted/refresh)
+    DP->>API: getCategoryTree()
+    API->>S: GET /api/stats/category-tree
+    S->>DB: category_tree()
+    DB-->>S: 顶级+直接子分类(子树total) 一次查出
+    S-->>API: CategoryTreeResponse(items)
+    API-->>DP: {items}
+    DP->>CT: :items
+    CT->>CT: 映射 treemapSeries (每顶级=series, 子=data)
+    CT-->>U: 渲染多级 treemap (distributed:false, 同色系深浅)

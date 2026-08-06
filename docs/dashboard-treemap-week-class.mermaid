@@ -1,0 +1,38 @@
+classDiagram
+    class ProjectStatsTrend {
+        +str range
+        +list~str~ labels
+        +list~int~ values
+    }
+    class CategoryTreeResponse {
+        +list~CategoryTreeItem~ items
+    }
+    class CategoryTreeItem {
+        +int id
+        +str name
+        +int project_total
+        +list~CategoryTreeChild~ children
+    }
+    class CategoryTreeChild {
+        +int id
+        +str name
+        +int project_total
+    }
+    class Database {
+        +project_daily_counts(days=14) list
+        +project_monthly_counts(months=6) list
+        +project_quarterly_counts(quarters=8) list
+        +project_weekly_counts(weeks=12) list
+        +category_tree() list
+        +category_breakdown(parent_id) list
+    }
+    class StatsRouter {
+        +stats_projects_trend(range) ProjectStatsTrend
+        +stats_category_tree() CategoryTreeResponse
+    }
+
+    CategoryTreeResponse "1" *-- "0..*" CategoryTreeItem : items
+    CategoryTreeItem "1" *-- "0..*" CategoryTreeChild : children
+    StatsRouter ..> Database : calls
+    StatsRouter ..> ProjectStatsTrend : returns
+    StatsRouter ..> CategoryTreeResponse : returns

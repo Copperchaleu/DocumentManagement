@@ -1,0 +1,50 @@
+classDiagram
+    class Database {
+        +list_categories_flat() list~dict~
+        +category_breakdown(parent_id: int|null) list~dict~
+    }
+
+    class CategoryBreakdownItem {
+        +int id
+        +str name
+        +int|null parent_id
+        +int sort_order
+        +bool has_children
+        +int project_total
+    }
+
+    class CategoryBreakdownRoute {
+        +GET /api/stats/category-breakdown
+        +stats_category_breakdown(parent_id: int|null) list~CategoryBreakdownItem~
+    }
+
+    class ApiClient {
+        +getCategoryBreakdown(parentId: int|null) Promise~Array~
+    }
+
+    class DashboardPanel {
+        +ref catParentId: int|null
+        +ref catRows: Array
+        +ref catLoading: bool
+        +ref catPath: Array~{id,name}~
+        +loadCategoryBreakdown()
+        +drillDown(row)
+        +goUp()
+        +goTop()
+        +loadStats()
+        +refresh()
+    }
+
+    class TrendChart {
+        +props labels: Array~str~
+        +props values: Array~int~
+        +props activeRange: str
+        +renderLineArea()
+    }
+
+    Database ..> CategoryBreakdownItem : dict 经 response_model 校验
+    CategoryBreakdownRoute ..> Database : 调用 category_breakdown
+    CategoryBreakdownRoute ..> CategoryBreakdownItem : response_model=list
+    ApiClient ..> CategoryBreakdownRoute : HTTP GET
+    DashboardPanel ..> ApiClient : getCategoryBreakdown
+    DashboardPanel ..> TrendChart : 恒折线渲染

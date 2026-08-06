@@ -7,6 +7,6 @@
   "autosave_seconds": 30,
   "db_backup_enabled": true,
   "db_backup_dir": "data/backups",
-  "db_backup_interval_hours": 24,
-  "db_backup_keep": 7
+  "db_backup_interval_hours": 1,
+  "db_backup_keep": 72
 }

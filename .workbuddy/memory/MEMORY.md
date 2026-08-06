@@ -20,6 +20,7 @@
 - 设计文档 `docs/workbench_persistence_design.md`；回归测试 `qa/test_workbench_persistence.py`（TestClient 真实 HTTP，10/10 PASS）。
 - ⚠️ **Pydantic 边界约定**：工作面板模型字段名 snake_case + `alias` camelCase + `ConfigDict(populate_by_name=True)`；响应 `response_model_by_alias=True` 输出 camelCase，入参 `model_dump(by_alias=False)` 得 snake_case 落库。曾因漏加 alias 导致 dueTime/reminderAt 未落库——新增 camelCase 字段务必补 alias。
 - ⚠️ 全局 `RequestValidationError → 400` 异常处理（main.py），使校验失败返回 400（契约要求）；此前默认 422，前端错误解析 status 无关故兼容。若需恢复 422，删 `_validation_exception_handler` 即可。
+- ⚠️ **Vue SFC 前端验证约定**：`npm run build` 不校验模板里引用了未定义的变量/函数（编译期不报错），但运行时必崩（如 `computed is not defined`、删了函数模板仍在引用）。前端改动后 QA 必须 grep 模板残留的已删标识符 + 跑 build，不能仅以 build 通过判定可用。
 
 ## 分类管理页拖拽排序（el-tree + reorder 端点）
 - 分类管理页 `web/src/views/CategoriesView.vue` 由 el-table 重写为 **el-tree**（绑定 `appState.categoryTree`，`node-key=id`），支持拖拽排序。

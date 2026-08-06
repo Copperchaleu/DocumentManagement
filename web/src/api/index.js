@@ -79,6 +79,12 @@ export const getProjectStatsSummary = () =>
 export const getProjectStatsTrend = (range = 'day') =>
   http.get('/api/stats/projects-trend', { params: { range } })
 
+export const getCategoryBreakdown = (parentId = null) =>
+  http.get('/api/stats/category-breakdown', { params: parentId == null ? {} : { parent_id: parentId } })
+
+// 看板「按分类统计」多级 treemap：返回顶级分类 + 直接子分类（仅一层）
+export const getCategoryTree = () => http.get('/api/stats/category-tree')
+
 // ---------- 工作面板：待办 / 随心记 ----------
 
 export * from './workbench'

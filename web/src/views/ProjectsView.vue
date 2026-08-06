@@ -145,6 +145,9 @@ async function onDelete(row) {
           v-model="selectedCategoryPath"
           :options="categoryCascaderOptions"
           :props="categoryCascaderProps"
+          popper-class="cat-cascader-popper"
+          placement="bottom-start"
+          :popper-options="{ modifiers: [{ name: 'flip', enabled: false }] }"
           clearable
           filterable
           style="width: 260px"

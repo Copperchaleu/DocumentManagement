@@ -167,3 +167,19 @@ def list_recent_quarters(n: int = 8) -> list[tuple[int, int, str]]:
         quarter = index % 4 + 1
         result.append((year, quarter, f"{year}-Q{quarter}"))
     return result
+
+
+def list_recent_weeks(n: int = 12) -> list[tuple[int, int, str]]:
+    """按升序返回最近 n 个 ISO 周 (iso_year, iso_week, label)。
+
+    标签 'YYYY-Www'，与 database.project_weekly_counts 产出一致。
+    锚点：本周一（isoweekday() 周一=1），保证窗口起点对齐 ISO 周边界。
+    """
+    now = datetime.now()
+    monday_this_week = now - timedelta(days=now.isoweekday() - 1)
+    result: list[tuple[int, int, str]] = []
+    for offset in range(n - 1, -1, -1):
+        mon = monday_this_week - timedelta(weeks=offset)
+        iso = mon.isocalendar()
+        result.append((iso.year, iso.week, f"{iso.year}-W{iso.week:02d}"))
+    return result

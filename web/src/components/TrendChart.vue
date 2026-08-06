@@ -20,9 +20,7 @@ const maxValue = computed(() => {
   return max <= 0 ? 1 : max
 })
 
-// 折线模式（日）：连续折线 + 渐变面积
-const isBar = computed(() => props.activeRange !== 'day')
-
+// 三个周期统一使用折线 + 渐变面积模式
 const points = computed(() => {
   const n = props.values.length
   if (!n) return []
@@ -53,20 +51,6 @@ const areaPath = computed(() => {
   )
 })
 
-// 柱状模式（月/季）
-const bars = computed(() => {
-  const n = props.values.length
-  if (!n) return []
-  const gap = 14
-  const barW = Math.max(10, (innerW.value - gap * (n - 1)) / n)
-  return props.values.map((v, i) => {
-    const x = PAD.left + i * (barW + gap)
-    const h = innerH.value * (v / maxValue.value)
-    const y = PAD.top + innerH.value - h
-    return { x, y, w: barW, h, v, label: props.labels[i] }
-  })
-})
-
 const yTicks = computed(() => {
   const ticks = []
   const steps = 4
@@ -78,11 +62,9 @@ const yTicks = computed(() => {
   return ticks
 })
 
-// 统一各模式下的 x 轴标签横坐标
+// 折线模式下 x 轴标签横坐标（始终与折线点对齐）
 const labelPositions = computed(() => {
-  const n = props.labels.length
-  if (!n) return []
-  if (isBar.value) return bars.value.map((b) => b.x + b.w / 2)
+  if (!props.labels.length) return []
   return points.value.map((p) => p.x)
 })
 
@@ -91,6 +73,14 @@ const visibleLabelIdx = computed(() => {
   const n = props.labels.length
   if (props.activeRange === 'day') {
     const step = Math.max(1, Math.ceil(n / 7))
+    const set = new Set()
+    for (let i = 0; i < n; i += step) set.add(i)
+    set.add(n - 1)
+    return set
+  }
+  // 周标签形如 YYYY-Www（约 8 字符），12 个横向较挤，抽稀到约 6 个
+  if (props.activeRange === 'week') {
+    const step = Math.max(1, Math.ceil(n / 6))
     const set = new Set()
     for (let i = 0; i < n; i += step) set.add(i)
     set.add(n - 1)
@@ -133,22 +123,8 @@ const visibleLabelIdx = computed(() => {
         >{{ t.val }}</text>
       </g>
 
-      <!-- 柱状模式 -->
-      <g v-if="isBar">
-        <rect
-          v-for="(b, i) in bars"
-          :key="`b${i}`"
-          :x="b.x"
-          :y="b.y"
-          :width="b.w"
-          :height="Math.max(0, b.h)"
-          :rx="4"
-          :fill="COLOR"
-        />
-      </g>
-
       <!-- 折线 + 面积模式 -->
-      <g v-else>
+      <g>
         <path :d="areaPath" fill="url(#trendArea)" />
         <path
           :d="linePath"
@@ -188,6 +164,6 @@ const visibleLabelIdx = computed(() => {
 .trend-chart { width: 100%; }
 .trend-svg { width: 100%; height: auto; display: block; }
 .trend-grid line { stroke: #eef2f7; stroke-width: 1; }
-.trend-axis-y { fill: #94a3b8; font-size: 11px; text-anchor: end; }
-.trend-axis-x { fill: #94a3b8; font-size: 11px; }
+.trend-axis-y { fill: #94a3b8; font-size: 13px; text-anchor: end; }
+.trend-axis-x { fill: #94a3b8; font-size: 13px; }
 </style>

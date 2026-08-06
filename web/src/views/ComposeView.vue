@@ -359,6 +359,9 @@ onBeforeUnmount(() => {
               v-model="categoryPath"
               :options="categoryCascaderOptions"
               :props="categoryCascaderProps"
+              popper-class="cat-cascader-popper"
+              placement="bottom-start"
+              :popper-options="{ modifiers: [{ name: 'flip', enabled: false }] }"
               clearable
               filterable
               style="width: 100%"

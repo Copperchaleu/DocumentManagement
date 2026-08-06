@@ -145,6 +145,21 @@ def run_db_tests(db: Database) -> None:
     except Exception as e:  # pragma: no cover
         check("非法-跨父级批量 抛 ValueError", False, f"非 ValueError: {e!r}")
 
+    # ============ 合法4：新增分类插入最前（不破坏已排序顺序）============
+    db.reorder_siblings(None, [cid, bid, aid])  # 根级重排为 [c,b,a]，sort_order 0,1,2
+    newc = db.create_category(name="NewC", parent_id=None)
+    check("合法-新增根级分类 sort_order=0（插入最前）",
+          newc["sort_order"] == 0, f"newc.sort_order={newc['sort_order']}")
+    top_names = [t["name"] for t in db.category_tree()]
+    check("合法-新增后顶层顺序为 [NewC,C,B,A]", top_names == ["NewC", "C", "B", "A"],
+          f"top_names={top_names}")
+
+    # ============ 合法5：删除新增项不破坏其余顺序 ============
+    db.delete_category(newc["id"])
+    after_del = [t["name"] for t in db.category_tree()]
+    check("合法-删除 NewC 后顶层顺序仍为 [C,B,A]", after_del == ["C", "B", "A"],
+          f"after_del={after_del}")
+
 
 def run_endpoint_checks() -> None:
     """端点接线验证：优先真实 TestClient；缺依赖则 AST 静态验证路由注册与接线。"""
