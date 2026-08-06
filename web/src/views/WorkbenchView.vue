@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Bell, Plus } from '@element-plus/icons-vue'
+import { Bell } from '@element-plus/icons-vue'
 import TaskBoard from '../components/TaskBoard.vue'
 import DashboardPanel from '../components/DashboardPanel.vue'
 import NotesPanel from '../components/NotesPanel.vue'
@@ -34,12 +34,7 @@ const todayInfo = computed(() => {
     <section class="workbench-hero">
       <div class="hero-copy">
         <div class="hero-eyebrow"><span /> WORKSPACE</div>
-        <h1>{{ greeting }}，开始今天的工作吧</h1>
-        <div class="hero-date">
-          <span class="date-dot" />
-          <span>今天 {{ todayInfo.today }}<template v-if="todayInfo.week"> · 第{{ todayInfo.week }}周</template></span>
-        </div>
-        <p>把重要事项放在这里，按节奏推进，不遗漏每一个时间节点。</p>
+        <h1>{{ greeting }}，今天是{{ todayInfo.today }}<template v-if="todayInfo.week"> · 第{{ todayInfo.week }}周</template></h1>
       </div>
       <div class="hero-actions">
         <el-button
@@ -49,9 +44,6 @@ const todayInfo = computed(() => {
           @click="taskBoardRef?.enableNotifications()"
         >
           开启系统提醒
-        </el-button>
-        <el-button type="primary" :icon="Plus" @click="taskBoardRef?.createTaskToday()">
-          新建待办
         </el-button>
       </div>
     </section>
@@ -96,28 +88,6 @@ const todayInfo = computed(() => {
 .hero-eyebrow { display: flex; align-items: center; gap: 8px; }
 .hero-eyebrow span { width: 18px; height: 2px; border-radius: 2px; background: #6366f1; }
 .hero-copy h1 { margin: 9px 0 8px; color: #172554; font-size: clamp(24px, 2.3vw, 34px); line-height: 1.2; letter-spacing: -.03em; }
-.hero-date {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin: 2px 0 0;
-  padding: 5px 13px;
-  border-radius: 999px;
-  background: rgba(79, 70, 229, 0.10);
-  border: 1px solid rgba(79, 70, 229, 0.20);
-  color: #3730a3;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.hero-date .date-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #4f46e5;
-  flex-shrink: 0;
-}
-.hero-copy p { margin: 0; color: #64748b; font-size: 14px; }
 .hero-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
 /* 三栏并排容器 */

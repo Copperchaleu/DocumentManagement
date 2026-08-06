@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   appState,
@@ -23,14 +23,25 @@ import {
 import MarkdownPreview from '../components/MarkdownPreview.vue'
 
 const router = useRouter()
+const route = useRoute()
 const detailVisible = ref(false)
 const detail = ref(null)
 const tableRef = ref(null)
 const tableWrapRef = ref(null)
 let tableResizeObserver = null
 
-// 侧边栏展开/折叠、窗口缩放会改变表格容器宽度；固定列需重新布局，否则“操作”列会与相邻列重叠
+// 侧边栏展开/折叠、窗口缩放会改变表格容器宽度；固定列需重新布局，否则"操作"列会与相邻列重叠
 onMounted(() => {
+  // 从路由 query 读取分类 ID（如从 treemap 点击跳转过来）
+  const cid = route.query.categoryId
+  if (cid != null) {
+    const id = Number(cid)
+    if (!isNaN(id)) {
+      appState.selectedCategoryId = id
+      // 设置筛选条件后主动重新加载列表，否则 cascader 显示已切换但表格未按新条件刷新
+      onRefresh()
+    }
+  }
   if (typeof ResizeObserver === 'undefined' || !tableWrapRef.value) return
   tableResizeObserver = new ResizeObserver(() => {
     tableRef.value?.doLayout?.()
@@ -132,14 +143,6 @@ async function onDelete(row) {
 <template>
   <div class="panel projects-panel">
     <div class="panel-head">
-      <div class="title-area">
-        <div class="title-row">
-          <h2>项目列表</h2>
-          <el-tag size="small" effect="plain" round type="info">
-            {{ appState.projects?.length || 0 }} 条
-          </el-tag>
-        </div>
-      </div>
       <div class="toolbar-row">
         <el-cascader
           v-model="selectedCategoryPath"
@@ -302,6 +305,18 @@ async function onDelete(row) {
 <style scoped>
 .projects-panel {
   min-width: 0;
+}
+
+.panel-head {
+  justify-content: flex-end;
+}
+
+.toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .table-wrap {

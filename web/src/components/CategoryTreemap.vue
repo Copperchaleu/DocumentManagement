@@ -1,9 +1,12 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount, nextTick, watch, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 const props = defineProps({
   items: { type: Array, default: () => [] },
 })
+
+const router = useRouter()
 
 // 根容器与图表实例引用：用于解决 0 宽渲染空白与切回缓存态不重绘问题
 const wrapRef = ref(null)
@@ -11,32 +14,44 @@ const chartRef = ref(null)
 // ResizeObserver 句柄（onBeforeUnmount 时需 disconnect）
 let ro = null
 
-// 沿用现有靛蓝主题色板（team-lead 拍板：每顶级一基色，子分类同色系深浅）
+// 沿用现有靛蓝主题色板（每方块取一基色，同级多分类用不同色区分）
 const TREEMAP_PALETTE = [
   '#4f46e5', '#6366f1', '#818cf8', '#a5b4fc', '#0ea5e9',
   '#22d3ee', '#34d399', '#f59e0b', '#fb7185', '#a78bfa',
 ]
 
-// 每个顶级分类 => 一个 series（外层分组）
-const treemapSeries = computed(() => {
-  if (!Array.isArray(props.items) || !props.items.length) return []
-  return props.items.map((top) => {
-    const children = Array.isArray(top.children) ? top.children : []
-    // 有子分类：子分类为嵌套矩形；无子分类（叶子顶级）：自身成独立矩形（不隐藏）
-    const data = children.length
-      ? children.map((c) => ({ x: c.name, y: Number(c.project_total) || 0 }))
-      : [{ x: top.name, y: Number(top.project_total) || 0 }]
-    // 顶级自身数量显式展示（team-lead 拍板：series name 拼接顶级总数）
-    return { name: `${top.name}(${top.project_total})`, data }
-  })
+// 下钻路径：从顶级到当前层级的节点链（{id, name}）；空数组 = 显示顶级
+const drillPath = ref([])
+
+// 按 drillPath 从完整多级树定位「当前层级」的节点数组
+const currentNodes = computed(() => {
+  let level = Array.isArray(props.items) ? props.items : []
+  for (const { id } of drillPath.value) {
+    const found = level.find((n) => n.id === id)
+    if (!found || !Array.isArray(found.children) || !found.children.length) return []
+    level = found.children
+  }
+  return level
 })
 
-// 是否存在任意有效数据（规避 ApexCharts 全 0 等面积怪异）
-const hasData = computed(
-  () =>
-    Array.isArray(props.items) &&
-    props.items.some((it) => (Number(it.project_total) || 0) > 0)
+// 当前层级扁平方块（名称只取当前级，不含上级路径）；面积用子树总数
+const currentFlat = computed(() =>
+  currentNodes.value.map((n) => ({
+    id: n.id,
+    name: n.name,
+    total: Number(n.project_total) || 0,
+    hasChildren: Array.isArray(n.children) && n.children.length > 0,
+  }))
 )
+
+// 单 series：当前层级所有分类作为同级方块，点击逐级下钻（参考官方 treemap-with-drilldown）
+const treemapSeries = computed(() => {
+  if (!currentFlat.value.length) return []
+  return [{ data: currentFlat.value.map((n) => ({ x: n.name, y: n.total })) }]
+})
+
+// 当前层级是否至少有一个方块
+const hasData = computed(() => currentFlat.value.length > 0)
 
 const treemapOptions = computed(() => ({
   chart: {
@@ -44,16 +59,28 @@ const treemapOptions = computed(() => ({
     fontFamily: 'inherit',
     toolbar: { show: false },
     animations: { enabled: true, speed: 400 },
+    events: {
+      click: (event, chartContext, config) => {
+        const node = currentFlat.value[config.dataPointIndex]
+        if (!node) return
+        if (node.hasChildren) {
+          // 有子分类：逐级展开下一级（名称只显示当前级）
+          drillPath.value = [...drillPath.value, { id: node.id, name: node.name }]
+        } else {
+          // 叶子（终点）：跳转项目列表查看其项目
+          router.push({ name: 'projects', query: { categoryId: String(node.id) } })
+        }
+      },
+    },
   },
   legend: { show: false },
   plotOptions: {
     treemap: {
-      distributed: false, // 按 series（顶级）分组上色
-      enableShades: true, // 子分类用同色系深浅区分
-      shadeIntensity: 0.45,
+      distributed: true, // 同级多分类各取一基色区分
+      enableShades: false,
     },
   },
-  colors: TREEMAP_PALETTE, // 每个 series（顶级）取一个基色
+  colors: TREEMAP_PALETTE,
   dataLabels: {
     enabled: true,
     style: { fontSize: '12px', fontWeight: 600, colors: ['#fff'] },
@@ -89,6 +116,14 @@ function refreshChart() {
   }
 }
 
+// 面包屑导航：回到顶级 / 跳到第 index 级
+function goRoot() {
+  drillPath.value = []
+}
+function goTo(index) {
+  drillPath.value = drillPath.value.slice(0, index + 1)
+}
+
 onMounted(() => {
   // 容器宽度一旦变为 > 0 即重绘，治理首访时布局未稳导致 0 宽空白且不自愈
   if (wrapRef.value && typeof ResizeObserver !== 'undefined') {
@@ -103,9 +138,9 @@ onMounted(() => {
   nextTick(refreshChart)
 })
 
-// 数据到达/变化时重绘（props.items 异步返回或父级 key 强制重挂载后）
+// 数据到达/下钻变化时重绘（props.items 异步返回、或 drillPath 切换层级）
 watch(
-  () => props.items,
+  () => [props.items, drillPath.value.length],
   () => nextTick(refreshChart),
   { deep: true }
 )
@@ -120,6 +155,18 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="cat-treemap" ref="wrapRef">
+    <div class="cat-breadcrumb" v-if="drillPath.length">
+      <span class="crumb root" @click="goRoot">全部分类</span>
+      <template v-for="(node, i) in drillPath" :key="node.id">
+        <span class="crumb-sep">/</span>
+        <span
+          class="crumb"
+          :class="{ current: i === drillPath.length - 1 }"
+          @click="goTo(i)"
+          >{{ node.name }}</span
+        >
+      </template>
+    </div>
     <apexchart
       v-if="hasData"
       ref="chartRef"
@@ -134,5 +181,25 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .cat-treemap { width: 100%; }
+.cat-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.crumb {
+  color: #4f46e5;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+.crumb:hover { background: rgba(79, 70, 229, 0.10); }
+.crumb.root { font-weight: 600; }
+.crumb.current { color: #172554; cursor: default; font-weight: 600; }
+.crumb.current:hover { background: transparent; }
+.crumb-sep { color: #94a3b8; }
 .cat-empty { padding: 24px; text-align: center; color: #94a3b8; font-size: 13px; }
 </style>

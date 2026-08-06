@@ -546,9 +546,9 @@ class Database:
         return result
 
     def category_tree(self) -> list[dict[str, Any]]:
-        """顶级分类树：每个顶级含其【直接子分类】及各自子树 project_total。
+        """分类树（支持任意层级嵌套）：每个顶级含其完整多级子树及各自子树 project_total。
 
-        返回: [{id, name, project_total, children:[{id, name, project_total}]}]
+        返回: [{id, name, project_total, children:[{id, name, project_total, children:[...]}]}]
         顶级 = parent_id 为 None；空库/无分类返回 []。
         """
         flat = self.list_categories_flat()          # 复用现有扁平表
@@ -568,29 +568,25 @@ class Database:
             memo[cid] = total
             return total
 
-        def sort_key(x):
-            return (x.get("sort_order") or 0, (x.get("name") or "").lower())
+        def sort_key(cid: int):
+            node = by_id[cid]
+            return (int(node.get("sort_order") or 0), (node.get("name") or "").lower())
 
-        result: list[dict[str, Any]] = []
-        for top in sorted([x for x in flat if x.get("parent_id") is None], key=sort_key):
-            child_ids = children_map.get(top["id"], [])
-            children = [
-                {
-                    "id": ch["id"],
-                    "name": ch["name"],
-                    "project_total": subtree_total(ch["id"]),
-                }
-                for ch in sorted([by_id[cid] for cid in child_ids], key=sort_key)
-            ]
-            result.append(
-                {
-                    "id": top["id"],
-                    "name": top["name"],
-                    "project_total": subtree_total(top["id"]),
-                    "children": children,
-                }
-            )
-        return result
+        def build_node(cid: int) -> dict[str, Any]:
+            child_ids = children_map.get(cid, [])
+            children = [build_node(ch) for ch in sorted(child_ids, key=sort_key)]
+            return {
+                "id": cid,
+                "name": by_id[cid]["name"],
+                "project_total": subtree_total(cid),
+                "direct_total": int(by_id[cid].get("project_count") or 0),
+                "children": children,
+            }
+
+        top_ids = sorted(
+            [c["id"] for c in flat if c.get("parent_id") is None], key=sort_key
+        )
+        return [build_node(cid) for cid in top_ids]
 
     def get_category_tree(self) -> list[dict[str, Any]]:
         flat = self.list_categories_flat()

@@ -1970,19 +1970,22 @@ def stats_category_breakdown(parent_id: Optional[int] = None) -> CategoryBreakdo
 
 
 class CategoryTreeChild(BaseModel):
-    """顶级分类下的直接子分类（含其子树总数）。"""
+    """分类节点（支持任意层级嵌套）：含子树总数、直接项目数与子分类列表。"""
 
     id: int
     name: str
     project_total: int = 0
+    direct_total: int = 0
+    children: list["CategoryTreeChild"] = []
 
 
 class CategoryTreeItem(BaseModel):
-    """顶级分类：含直接子分类列表。"""
+    """顶级分类：含完整多级子分类树。"""
 
     id: int
     name: str
     project_total: int = 0
+    direct_total: int = 0
     children: list[CategoryTreeChild] = []
 
 

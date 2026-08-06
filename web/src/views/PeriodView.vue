@@ -490,7 +490,15 @@ async function onCopyPaths() {
   min-width: 0;
 }
 
+.panel-head {
+  justify-content: flex-end;
+}
+
 .filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
   justify-content: flex-end;
 }
 
