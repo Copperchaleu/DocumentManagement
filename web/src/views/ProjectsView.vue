@@ -21,6 +21,7 @@ import {
   toCascaderOptions,
 } from '../utils/tree'
 import MarkdownPreview from '../components/MarkdownPreview.vue'
+import HtmlPreview from '../components/HtmlPreview.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -293,7 +294,7 @@ async function onDelete(row) {
               v-if="(detail.content_format || 'html') === 'md'"
               :content="detail.content"
             />
-            <pre v-else class="detail-content">{{ detail.content }}</pre>
+            <HtmlPreview v-else :content="detail.content || ''" />
           </el-descriptions-item>
           <el-descriptions-item label="附件">
             <div v-if="(detail.attachments || []).length" class="attach-list">

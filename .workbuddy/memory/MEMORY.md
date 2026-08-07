@@ -33,3 +33,10 @@
 - `get_category_tree()` 在组装后显式按 `sort_order, name` 排兄弟序（防御 flat 遍历顺序变化）。
 - 后端：`POST /api/categories/reorder`，body `{parent_id:int|null, ordered_ids:[int]}`（须覆盖该父级全部兄弟）；`database.reorder_siblings` 单事务 + 4 项校验（空/重复/同父/全覆盖），非法抛 ValueError→400 且事务回滚不改 sort_order。
 - 设计文档：`docs/design_category_reorder.md`；测试：`qa/backend_reorder_test.py`（24 PASS）、`qa/frontend_reorder_test.mjs`（13 PASS）。
+
+## 项目正文编辑器（Tiptap）
+- Compose 用 Tiptap WYSIWYG；库内真源 HTML（content_format=html）；周期汇总磁盘仍 Markdown。
+- 打开 md 历史：后端 content_for_editor=md_to_html，懒转不写库；保存升格 html。
+- 详情：html→HtmlPreview，md→MarkdownPreview。
+- 依赖：@tiptap/vue-3 / starter-kit / extension-{underline,link,placeholder}；已移除 md-editor-v3。
+- 测试：qa/test_tiptap_editor.py（26 PASS）。

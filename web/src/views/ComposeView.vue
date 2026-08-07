@@ -2,8 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { MdEditor } from 'md-editor-v3'
-import 'md-editor-v3/lib/style.css'
 import {
   appState,
   refreshCategories,
@@ -19,33 +17,10 @@ import {
   makeSaveToken,
   toCascaderOptions,
 } from '../utils/tree'
-import { mdToPlainText } from '../utils/markdown'
+import { htmlToPlainText } from '../utils/html'
+import TiptapEditor from '../components/TiptapEditor.vue'
 
 const route = useRoute()
-
-// 仅保留迁移覆盖的能力：标题、粗体、斜体、删除线、有序/无序列表、引用、链接、撤销/重做。
-// 移除字体族、字号、文字颜色、段落对齐等富样式工具栏项（P1-3 从源头控制）。
-const toolbars = [
-  'bold',
-  'underline',
-  'italic',
-  'strikeThrough',
-  'title',
-  'quote',
-  'unorderedList',
-  'orderedList',
-  'link',
-  'codeRow',
-  'code',
-  'revoke',
-  'next',
-  'preview',
-  'fullscreen',
-]
-
-const editorConfig = {
-  placeholder: '在此用 Markdown 撰写该项目的相关信息…',
-}
 
 const form = reactive({
   projectId: null,
@@ -66,8 +41,8 @@ const clientSaveToken = ref(makeSaveToken())
 let autosaveTimer = null
 let autosaveBusy = false
 
-// 字数统计 / 判空：Markdown → 纯文本提取（与后端 html_to_plain_text 口径一致）。
-const contentText = computed(() => mdToPlainText(form.content))
+// 字数统计 / 判空：HTML → 纯文本（与后端 get_plain_text(content, 'html') 口径一致）
+const contentText = computed(() => htmlToPlainText(form.content))
 const contentLength = computed(() => contentText.value.length)
 
 function handleEditorChange() {
@@ -155,6 +130,7 @@ async function doAutosave(force = false) {
       title: form.title,
       category_id: form.categoryId,
       content: form.content,
+      content_format: 'html',
       time_modes: form.timeModes,
     })
     if (data.skipped) return
@@ -218,8 +194,9 @@ async function onSave() {
   saveBusy.value = true
   try {
     const fd = new FormData()
-    // form.content 直接是 Markdown 字符串；后端嗅探 format 兜底（零契约变更）。
+    // 真源：Tiptap HTML；显式 content_format=html 避免嗅探误判
     fd.append('content', form.content)
+    fd.append('content_format', 'html')
     fd.append('category_id', String(form.categoryId))
     fd.append('title', form.title || '')
     fd.append('time_modes', form.timeModes.join(','))
@@ -272,7 +249,8 @@ function loadEditPayload() {
     const p = JSON.parse(raw)
     form.projectId = p.id
     form.title = p.title || ''
-    form.content = p.content || ''
+    // 后端 getProject 对 md 懒转 HTML 附 content_for_editor；html 原样
+    form.content = p.content_for_editor || p.content || ''
     form.categoryId = p.category_id || null
     form.timeModes = p.time_modes?.length ? [...p.time_modes] : ['week', 'month', 'quarter']
     dirty.value = false
@@ -285,8 +263,7 @@ function loadEditPayload() {
   }
 }
 
-// 富文本编辑器挂载前同步加载表单数据，使 MdEditor 初始化时 v-model 已含内容，
-// 避免异步初始化空值覆盖已加载内容（MdEditor 使用 v-model 双向绑定）。
+// 编辑器挂载前同步加载表单，使 Tiptap 初始化时 v-model 已含内容
 if (route.query.edit) {
   loadEditPayload()
 } else if (route.query.create) {
@@ -386,19 +363,16 @@ onBeforeUnmount(() => {
         </div>
       </el-form-item>
 
-      <el-form-item label="项目内容（Markdown）*">
-        <div class="md-editor-shell">
-          <MdEditor
+      <el-form-item label="项目内容（富文本）*">
+        <div class="tiptap-editor-shell">
+          <TiptapEditor
             v-model="form.content"
-            :toolbars="toolbars"
-            :editor-config="editorConfig"
-            language="zh-CN"
-            :preview="true"
-            @onChange="handleEditorChange"
+            placeholder="在此撰写该项目的相关信息…"
+            @change="handleEditorChange"
           />
         </div>
         <div class="content-meta">
-          <span class="hint">支持标题、粗体、斜体、删除线、列表、引用与链接；纯展示样式（字体/字号/颜色/对齐）不保留</span>
+          <span class="hint">支持标题、粗体、斜体、下划线、删除线、列表、引用、链接与代码；纯展示样式（字体/字号/颜色/对齐）不提供</span>
           <span class="hint">{{ contentLength }} 字</span>
         </div>
       </el-form-item>
@@ -422,7 +396,7 @@ onBeforeUnmount(() => {
 
       <div class="form-actions">
         <el-button type="primary" size="large" :loading="saveBusy" @click="onSave">
-          正式保存到 Markdown
+          正式保存
         </el-button>
         <el-button size="large" @click="doAutosave(true)">立即保存草稿</el-button>
       </div>
@@ -480,7 +454,7 @@ onBeforeUnmount(() => {
   word-break: break-all;
 }
 
-.md-editor-shell {
+.tiptap-editor-shell {
   width: 100%;
   overflow: hidden;
   border: 1px solid #cbd5e1;
@@ -490,16 +464,9 @@ onBeforeUnmount(() => {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.md-editor-shell:focus-within {
-  border-color: #3730a3;
-  box-shadow: 0 0 0 3px rgba(55, 48, 163, 0.14);
-}
-
-.md-editor-shell :deep(.md-editor) {
-  height: 480px;
-  border: none;
-  border-radius: 12px;
-  z-index: auto;
+.tiptap-editor-shell:focus-within {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
 }
 
 .content-meta {

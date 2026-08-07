@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from .database import Database
-from .markdown_utils import get_plain_text, sniff_content_format
+from .markdown_utils import get_plain_text, md_to_html, sniff_content_format
 from .path_utils import (
     ensure_dir,
     get_iso_week_range,
@@ -230,6 +230,8 @@ class ProjectDraftSave(BaseModel):
     title: str = ""
     category_id: Optional[int] = None
     content: str = ""
+    # 前端 Tiptap 写路径显式传 html；非法/空则 sniff 兜底
+    content_format: Optional[str] = None
     time_modes: list[str] = Field(default_factory=lambda: ["week", "month", "quarter"])
 
 
@@ -1368,6 +1370,16 @@ def get_project(project_id: int):
     project = db.get_project(project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
+    # 编辑器可读 HTML：历史 md 懒转（不写库）；html 原样
+    raw = project.get("content") or ""
+    fmt = (project.get("content_format") or "html").lower()
+    if fmt == "md":
+        try:
+            project["content_for_editor"] = md_to_html(raw)
+        except Exception as e:
+            raise HTTPException(500, f"历史 Markdown 转换失败，请稍后重试：{e}") from e
+    else:
+        project["content_for_editor"] = raw
     return project
 
 
@@ -1379,6 +1391,7 @@ async def save_project(
     time_modes: str = Form("week,month,quarter"),
     project_id: Optional[int] = Form(None),
     client_save_token: str = Form(""),
+    content_format: Optional[str] = Form(None),
     files: list[UploadFile] = File(default=[]),
 ):
     """
@@ -1386,9 +1399,14 @@ async def save_project(
     - 项目归属叶子分类
     - 按勾选的周/月/季，把该分类本周期所有项目合并为同一 Markdown 周期文档
     - 周期文档被占用时返回明确错误，且不创建重复项目
+    - 写路径优先显式 content_format（Tiptap 传 html），否则 sniff 兜底
     """
     content = (content or "").strip()
-    fmt = sniff_content_format(content)
+    fmt_in = (content_format or "").strip().lower()
+    if fmt_in in ("html", "md"):
+        fmt = fmt_in
+    else:
+        fmt = sniff_content_format(content)
     plain_content = get_plain_text(content, fmt).strip()
     if not plain_content:
         raise HTTPException(400, "项目内容不能为空")
@@ -1546,9 +1564,14 @@ def autosave_project(body: ProjectDraftSave):
     """
     定时自动保存草稿（不写入周期文档）。
     避免长时间粘贴编辑时内容丢失。
+    写路径优先显式 content_format（Tiptap 传 html），否则 sniff 兜底。
     """
     content = (body.content or "").strip()
-    fmt = sniff_content_format(content)
+    fmt_in = (body.content_format or "").strip().lower()
+    if fmt_in in ("html", "md"):
+        fmt = fmt_in
+    else:
+        fmt = sniff_content_format(content)
     plain_content = get_plain_text(content, fmt).strip()
     if not plain_content and not (body.title or "").strip():
         return {"ok": False, "skipped": True, "reason": "empty"}
