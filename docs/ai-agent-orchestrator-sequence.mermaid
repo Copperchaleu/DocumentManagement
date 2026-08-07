@@ -1,0 +1,23 @@
+%% AI Agent · 对话编排循环（意图 → 工具 → 结构化操作）
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant O as Orchestrator
+    participant G as LLM Gateway(本地)
+    participant T as Tool Registry
+    participant S as Service/DB
+
+    U->>O: 自然语言消息 + session_id
+    O->>O: 载入会话历史 + 注入分类树/时间标签
+    O->>G: messages + tools schema
+    G-->>O: content / tool_calls
+    loop 直到无 tool_calls（最多 K 轮）
+        O->>T: 执行 tool_calls
+        T->>S: 读/写（同一事务语义）
+        S-->>T: 结构化结果
+        T-->>O: 工具结果 JSON
+        O->>G: 追加工具结果后再问
+        G-->>O: 继续或最终文本
+    end
+    O->>O: 持久化 assistant + 审计写操作
+    O-->>U: 自然语言回复（可含下载链接）

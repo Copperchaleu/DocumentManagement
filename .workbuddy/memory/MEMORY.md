@@ -7,11 +7,13 @@
 - 曾尝试静默启动（pythonw/detached）不稳定，已回退为前台方式
 - 后端：`backend/`（FastAPI）；前端源码 `web/`（Vue3+ElementPlus）；产物 `frontend/dist`
 - 日常只 start；改前端才 `build-frontend.bat` / `npm run build`
+- **AI Agent 方案（仅设计）**：`docs/ai-agent-design.md`。同进程 `backend/agent/`，本地 Ollama 默认，写路径必须复用 service→`rebuild_period_word`；`config.json` 预留 `ai.enabled` 默认 false。
 - ⚠️ **dist 干净重建**：`web/vite.config` 设 `emptyOutDir:false`（outDir 在 web 根外），`npm run build` 不清旧产物 → `frontend/dist` 会累积陈旧 chunk（曾堆到 14 个 CategoriesView + 48 个 index）。需彻底干净时先 `rm -rf frontend/dist` 再 `npm run build`（managed node 22.22.2）。懒加载视图 JS 与配套 CSS 哈希不同（如 `CategoriesView-BXY9Hl1l.js` + `BA-bnec9.css`），二者成对存在即正常，非断裂。
 - 分类树 parent_id；项目只属叶子分类；叶子目录可 browse-folder 选择
 - 同一叶子分类 + 周/月/季 → 一个 Word；定时草稿 autosave_seconds=30
 - 按周=ISO 周（周一~周日）
 - UI 主题：靛蓝主色 `#4f46e5`，全局设计令牌在 `web/src/styles/app.css`
+- ⚠️ **跨分支前端依赖不同步（必看）**：`markdown` 用 `md-editor-v3`，`tiptap` 用 `@tiptap`，两分支 `package.json` 不同但共享同一 `web/node_modules`。**切分支后务必 `cd web && npm install` 重同步**，否则构建报 `Rolldown failed to resolve import "md-editor-v3"`（或 `@tiptap`）找不到模块。受管 Node 22.22.2：`/Users/graypaul/.workbuddy/binaries/node/versions/22.22.2/bin`
 
 ## 工作面板 /workbench（v2 单页三栏并排，非选项卡）
 - `WorkbenchView.vue` = 全局 hero + `.workbench-columns` 三栏网格（待办/看板/随心记 同屏并排，非 tab）

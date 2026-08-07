@@ -1,0 +1,21 @@
+%% AI Agent 集成 · 整体架构
+flowchart TB
+    subgraph FE["前端 Vue3 + Element Plus"]
+        CHAT["/assistant · ChatPanel.vue<br/>靛蓝主题 #4f46e5"]
+    end
+
+    subgraph BE["FastAPI 同进程"]
+        ROUTE["POST /api/agent/chat"]
+        ORCH["Agent Orchestrator<br/>agent_service.py"]
+        GATE["LLM Gateway<br/>默认本地 Ollama"]
+        REG["Tool Registry + Tools"]
+        SVC["Business Service Layer<br/>project / category service"]
+        DB[("SQLite · db 单例<br/>+ chat_sessions / agent_audit_log")]
+    end
+
+    CHAT -->|"session_id + message"| ROUTE
+    ROUTE --> ORCH
+    ORCH <-->|"function calling"| GATE
+    ORCH -->|"execute tool_calls"| REG
+    REG --> SVC
+    SVC --> DB

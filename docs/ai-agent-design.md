@@ -14,9 +14,9 @@
 
 | 事实 | 代码位置 | 对 Agent 设计的含义 |
 |------|----------|----------------------|
-| 进程内单例 `db = Database(DB_PATH)`，无独立服务 | `backend/main.py:82` | Agent 可作为**同进程模块**直接复用 `db`，无需 HTTP 绕行 |
+| 进程内单例 `db = Database(DB_PATH)`，无独立服务 | `backend/main.py:83` | Agent 可作为**同进程模块**直接复用 `db`，无需 HTTP 绕行 |
 | 项目保存 = 计算周期标签 → `precheck_period_files_writable` → 改库 → `rebuild_period_word`（含 `source_sha256` 去重 + 版本入库） | `save_project` / `rebuild_period_word`（`main.py`） | Agent 写操作**必须复用同一段业务规则**，绝不允许绕过 Word 重建/版本审计直接改表 |
-| `save_project` 是 `multipart/form` 上传接口，内嵌业务规则 | `main.py:1272` | 必须把"业务规则中枢"从 HTTP 壳抽离成可复用 service，否则 Agent 与 UI 会出现两套逻辑 |
+| `save_project` 是 `multipart/form` 上传接口，内嵌业务规则 | `main.py:1375`（`delete_project` 约 1615） | 必须把"业务规则中枢"从 HTTP 壳抽离成可复用 service，否则 Agent 与 UI 会出现两套逻辑 |
 | 周期标签由 `path_utils.get_time_labels` / `get_iso_week_range` 统一产出（ISO 周） | `backend/path_utils.py` | Agent 解析"上周/本周"等相对时间必须复用同一函数，避免口径漂移 |
 | 读接口已齐备：`list_projects`、`list_projects_for_period`、`get_project`、`count_saved_projects_period`、`project_daily_counts` 等 | `database.py` | 读类工具可直接挂到 Agent，无需重写 |
 | README 明文："数据只落本机，不联网上传" | `README.md:135` | **LLM 必须默认本地化**（Ollama 等），禁止默认把项目内容送往云端 |

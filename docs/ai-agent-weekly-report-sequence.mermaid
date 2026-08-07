@@ -1,0 +1,20 @@
+%% AI Agent · 周报生成流程
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant O as Orchestrator
+    participant T as generate_weekly_report
+    participant DB as Database
+    participant G as LLM(本地)
+    participant RB as report_builder
+
+    U->>O: 生成本周周报（分类X）
+    O->>T: 解析 category_id + week_label
+    T->>DB: list_projects_for_period / count / trend
+    DB-->>T: 结构化项目数据
+    T->>G: 基于数据写周报（防幻觉指令）
+    G-->>T: 分节报告文本
+    T->>RB: build_report_document(报告+原始清单)
+    RB-->>T: docx bytes
+    T-->>O: 文本 + 下载链接
+    O-->>U: 周报预览 + 下载卡片
